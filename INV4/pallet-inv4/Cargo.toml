@@ -45,16 +45,18 @@ sp-core = { git = "https://github.com/paritytech/substrate", branch = "polkadot-
 [features]
 default = ["std"]
 std = [
-	"serde",
-	"codec/std",
-	"sp-runtime/std",
-	"sp-std/std",
-	"frame-support/std",
-	"frame-system/std",
+  "serde",
+  "codec/std",
+  "sp-runtime/std",
+  "sp-std/std",
+  "frame-support/std",
+  "frame-system/std",
   "sp-io/std",
   "scale-info/std",
   "pallet-balances/std",
   "pallet-assets/std",
-  "sp-sandbox/std"
+  "sp-sandbox/std",
+  "primitives/std",
+  "ipf/std"
 ]
 try-runtime = ["frame-support/try-runtime"]

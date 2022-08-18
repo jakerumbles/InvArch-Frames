@@ -28,7 +28,7 @@ pallet-balances = { git = 'https://github.com/paritytech/substrate.git', branch 
 
 
 [dev-dependencies]
-serde = { version = "1.0.132" }
+# serde = { version = "1.0.132" }
 
 # Substrate
 sp-core = { git = "https://github.com/paritytech/substrate", default-features = false, branch = "polkadot-v0.9.26" }
@@ -44,9 +44,7 @@ std = [
 	"frame-benchmarking/std",
 	"frame-support/std",
 	"frame-system/std",
-	"sp-core/std",
-	"sp-io/std",
-	"sp-runtime/std",
-	"pallet-balances/std"
+	"pallet-balances/std",
+    "primitives/std"
 ]
 try-runtime = [ "frame-support/try-runtime" ]
