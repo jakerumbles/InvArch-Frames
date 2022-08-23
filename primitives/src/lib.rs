@@ -4,6 +4,8 @@ use codec::{Decode, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 use sp_runtime::Percent;
 
+pub mod ocif;
+
 #[derive(Encode, Decode, Clone, Copy, Eq, PartialEq, MaxEncodedLen, Debug, TypeInfo)]
 pub enum OneOrPercent {
     One,
