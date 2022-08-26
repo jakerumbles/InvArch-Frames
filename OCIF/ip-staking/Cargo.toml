@@ -29,6 +29,7 @@ pallet-inv4 = { git = "https://github.com/InvArch/InvArch-Frames", branch = "mai
 
 # Frame dependencies
 pallet-balances = { git = 'https://github.com/paritytech/substrate.git', branch = "polkadot-v0.9.26", default-features = false }
+pallet-staking = { git = 'https://github.com/paritytech/substrate.git', branch = "polkadot-v0.9.26", default-features = false }
 
 
 [dev-dependencies]
@@ -49,6 +50,7 @@ std = [
 	"frame-support/std",
 	"frame-system/std",
 	"pallet-balances/std",
+	"pallet-staking/std",
     "primitives/std"
 ]
 try-runtime = [ "frame-support/try-runtime" ]

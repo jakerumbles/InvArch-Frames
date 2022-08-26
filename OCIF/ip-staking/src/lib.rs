@@ -21,7 +21,7 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use sp_runtime::traits::{AtLeast32BitUnsigned};
+use sp_runtime::traits::{AtLeast32BitUnsigned, Zero, One, CheckedAdd, AccountIdConversion};
 use scale_info::prelude::fmt::Display;
 
 use primitives::{Parentage, ocif::IpsStakeInfo, utils::*};
@@ -40,19 +40,22 @@ pub use pallet::*;
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-	use frame_support::{dispatch::{DispatchResultWithPostInfo, DispatchErrorWithPostInfo}, pallet_prelude::{*, StorageMap, ValueQuery}, 
-			traits::{Currency, ReservableCurrency}, PalletId, Blake2_128Concat};
+	use frame_support::{dispatch::{DispatchResultWithPostInfo, DispatchErrorWithPostInfo}, pallet_prelude::{*, StorageMap, ValueQuery, StorageValue}, 
+			traits::{Currency, ReservableCurrency, fungible::{Mutate, Inspect}}, PalletId, Blake2_128Concat};
 	use frame_system::pallet_prelude::*;
 	use core::iter::Sum;
+	use pallet_staking::EraPayout;
 
 	pub type BalanceOf<T> = <T as pallet::Config>::Balance;
 	pub type IpsIdOf<T> = <T as pallet_inv4::Config>::IpId;
+	pub type BlockNumberOf<T> = <T as frame_system::Config>::BlockNumber;
+	pub type Era = u32;
 
-	use pallet_inv4 as inv4;
+	use pallet_inv4::{self as inv4};
 
 	/// Configure the pallet by specifying the parameters and types on which it depends.
 	#[pallet::config]
-	pub trait Config: frame_system::Config + pallet_balances::Config + pallet_inv4::Config {
+	pub trait Config: frame_system::Config + pallet_inv4::Config {
 		/// Because this pallet emits events, it depends on the runtime's definition of an event.
 		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
 
@@ -66,7 +69,8 @@ pub mod pallet {
             + MaxEncodedLen
             + Clone;
 
-		type Currency: Currency<Self::AccountId> + ReservableCurrency<Self::AccountId>;
+		/// Get access to the balances pallet
+		type Currency: Currency<Self::AccountId> + ReservableCurrency<Self::AccountId> + Mutate<Self::AccountId>;
 
 		type Balance: Member
 			+ Parameter
@@ -78,23 +82,50 @@ pub mod pallet {
 			+ TypeInfo
 			+ Sum<<Self as pallet::Config>::Balance>
 			+ IsType<<Self as pallet_balances::Config>::Balance>
-			+ From<u128>;
+			+ From<u128>
+			+ From<<<Self as pallet::Config>::Currency as Currency<<Self as frame_system::Config>::AccountId>>::Balance>;
 
+		/// Proveds access to the `era_payout()` function which determines how much should be paid out to stakers per era
+		type EraPayout: EraPayout<<Self as pallet::Config>::Balance>;
+
+		/// The IP Staking pallet id, used for deriving its sovereign account ID. 
+		/// Tokens from inflation will be minted to here before they are claimed by members of the staking system.
 		#[pallet::constant]
 		type PalletId: Get<PalletId>; 
 
+		/// To deter the waste of chain storage, require a reasonable deposit to register an IPS
 		#[pallet::constant]
 		type IpsRegisterDeposit: Get<<Self as pallet::Config>::Balance>;
 
+		/// To deter the waste of chain storage, set a reasonable minimum staking amount
 		#[pallet::constant]
 		type MinStakingAmount: Get<<Self as pallet::Config>::Balance>;
+
+		/// Used for the EraPayout::era_payout() function which determines the # of tokens to mint per era (inflation)
+		#[pallet::constant]
+		type MillisecondsPerEra: Get<u64>;
+
+		/// The number of blocks per era. The lower the #, the more chain storage and computation will increase per a given time period
+		#[pallet::constant]
+		type BlocksPerEra: Get<u32>;
 	}
 
 	#[pallet::pallet]
 	#[pallet::generate_store(pub(super) trait Store)]
 	pub struct Pallet<T>(_);
 
-	// The pallet's runtime storage items.
+	#[pallet::storage]
+	#[pallet::getter(fn total_staked)]
+	pub type TotalStaked<T> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn current_era)]
+	pub type CurrentEra<T> = StorageValue<_, u32, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn last_payout_block)]
+	pub type LastPayoutBlock<T> = StorageValue<_, BlockNumberOf<T>, ValueQuery>;
+
 	#[pallet::storage]
 	#[pallet::getter(fn registered_ips)]
 	pub type RegisteredIps<T> = StorageMap<_, Blake2_128Concat, IpsIdOf<T>, IpsStakeInfo<BalanceOf<T>>>;
@@ -115,11 +146,37 @@ pub mod pallet {
 		NoPermission,
 		/// IP staking is only allowed on top level parent IP sets
 		NotParent,
+		/// Datatype holding era has maxed out. Should never happen.
+		NoAvailableEra,
+		/// Data type overflow
+		Overflow,
 	}
 
 	#[pallet::hooks]
-	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
+    impl<T: Config> Hooks<T::BlockNumber> for Pallet<T> {
+        fn on_initialize(n: T::BlockNumber) -> Weight {
+			let blocks_per_era: T::BlockNumber = <T as Config>::BlocksPerEra::get().into();
 
+			// Activates once at first block of each era
+            if n != Zero::zero() && (n % blocks_per_era).is_zero() {
+				// Get previous era
+				let prev_era = Self::increment_era();
+				
+				// Compute inflation for previous era
+				let total_staked: BalanceOf<T> = Self::total_staked();
+				let total_issuance: BalanceOf<T> = BalanceOf::<T>::from(<<T as pallet::Config>::Currency as Currency<T::AccountId>>::total_issuance());
+				let (to_mint, extra) = <T as Config>::EraPayout::era_payout(total_staked, total_issuance, <T as Config>::MillisecondsPerEra::get());
+				let total: BalanceOf<T> = to_mint + extra;
+
+				// Mint tokens (inflation)
+				let inflation_pot = Self::account_id();
+				// <T as Config>::Currency::mint_into(&inflation_pot, < as frame_support::traits::fungible::Inspect::Balance::from(total));
+			}
+
+			// to get rid of error for now
+			100
+		}
+	}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -139,15 +196,17 @@ pub mod pallet {
 			ensure!(innovator == derived_address, Error::<T>::NoPermission);
 
 			// Ensure IPS is top level i.e. a Parentage::Parent variant
-			match ips.unwrap().parentage.clone() {
-				Parent => ensure!(false, Error::<T>::NotParent),
-				Child => ensure!(false, Error::<T>::NotParent)
-			};
+			// match ips.unwrap().parentage.clone() {
+			// 	Parent => ensure!(false, Error::<T>::NotParent),
+			// 	Child => ensure!(false, Error::<T>::NotParent)
+			// };
 
-			match ips.unwrap().parentage.clone() {
-                Parentage::Parent(_) => ensure!(false, Error::<T>::NotParent),
-                Parentage::Child(_, _) => ensure!(false, Error::<T>::NotParent)
-            };
+			// match ips.unwrap().parentage.clone() {
+            //     Parentage::<<T as frame_system::Config>::AccountId, <T as pallet_inv4::Config>::IpId>::Parent(_) => ensure!(false, Error::<T>::NotParent),
+            //     Parentage::Child(_, _) => ensure!(false, Error::<T>::NotParent)
+            // };
+
+			
 
 			Ok(().into())
 		}
@@ -221,5 +280,25 @@ pub mod pallet {
 		// 		},
 		// 	}
 		// }
+	}
+
+	impl<T: Config> Pallet<T> {
+		fn increment_era() -> Era {
+			let mut old_era = 0;
+			let _ = CurrentEra::<T>::try_mutate(|era| -> DispatchResult {
+				old_era = *era;
+				*era = era
+                	.checked_add(One::one())
+                	.ok_or(Error::<T>::NoAvailableEra)?;
+
+				Ok(())
+			});
+
+			old_era
+		}
+
+		fn account_id() -> T::AccountId {
+			T::PalletId::get().into_account_truncating()
+		}
 	}
 }
