@@ -21,7 +21,7 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use sp_runtime::traits::{AtLeast32BitUnsigned, Zero, One, CheckedAdd, AccountIdConversion};
+use sp_runtime::{print, traits::{AtLeast32BitUnsigned, Zero, One, CheckedAdd, AccountIdConversion}};
 use scale_info::prelude::fmt::Display;
 
 use primitives::{Parentage, ocif::IpsStakeInfo, utils::*};
@@ -46,7 +46,9 @@ pub mod pallet {
 	use core::iter::Sum;
 	use pallet_staking::EraPayout;
 
-	pub type BalanceOf<T> = <T as pallet::Config>::Balance;
+	// pub type BalanceOf<T> = <T as pallet::Config>::Balance;
+	pub type BalanceOf<T> = <<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
+	pub type AccountIdOf<T> = <T as frame_system::Config>::AccountId;
 	pub type IpsIdOf<T> = <T as pallet_inv4::Config>::IpId;
 	pub type BlockNumberOf<T> = <T as frame_system::Config>::BlockNumber;
 	pub type Era = u32;
@@ -70,7 +72,7 @@ pub mod pallet {
             + Clone;
 
 		/// Get access to the balances pallet
-		type Currency: Currency<Self::AccountId> + ReservableCurrency<Self::AccountId> + Mutate<Self::AccountId>;
+		type Currency: Currency<Self::AccountId> + ReservableCurrency<Self::AccountId> + Mutate<Self::AccountId> + frame_support::traits::fungible::Inspect<Self::AccountId>;
 
 		type Balance: Member
 			+ Parameter
@@ -86,7 +88,8 @@ pub mod pallet {
 			+ From<<<Self as pallet::Config>::Currency as Currency<<Self as frame_system::Config>::AccountId>>::Balance>;
 
 		/// Proveds access to the `era_payout()` function which determines how much should be paid out to stakers per era
-		type EraPayout: EraPayout<<Self as pallet::Config>::Balance>;
+		type EraPayout: EraPayout<<<Self as Config>::Currency as Currency<<Self as frame_system::Config>::AccountId>>::Balance>;
+		// type EraPayout: EraPayout<<Self as Config>::Balance>;
 
 		/// The IP Staking pallet id, used for deriving its sovereign account ID. 
 		/// Tokens from inflation will be minted to here before they are claimed by members of the staking system.
@@ -108,10 +111,13 @@ pub mod pallet {
 		/// The number of blocks per era. The lower the #, the more chain storage and computation will increase per a given time period
 		#[pallet::constant]
 		type BlocksPerEra: Get<u32>;
+
+		#[pallet::constant]
+		type UnbondingPeriod: Get<Era>;
 	}
 
 	#[pallet::pallet]
-	#[pallet::generate_store(pub(super) trait Store)]
+	#[pallet::generate_store(pub trait Store)]
 	pub struct Pallet<T>(_);
 
 	#[pallet::storage]
@@ -130,11 +136,14 @@ pub mod pallet {
 	#[pallet::getter(fn registered_ips)]
 	pub type RegisteredIps<T> = StorageMap<_, Blake2_128Concat, IpsIdOf<T>, IpsStakeInfo<BalanceOf<T>>>;
 
+
+
 	// Pallets use events to inform users when important changes are made.
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		IpsRegistered(IpsIdOf<T>)
+		IpsRegistered(IpsIdOf<T>),
+		InflationEvent(AccountIdOf<T>, BalanceOf<T>),
 	}
 
 	// Errors inform users that something went wrong.
@@ -164,16 +173,19 @@ pub mod pallet {
 				
 				// Compute inflation for previous era
 				let total_staked: BalanceOf<T> = Self::total_staked();
-				let total_issuance: BalanceOf<T> = BalanceOf::<T>::from(<<T as pallet::Config>::Currency as Currency<T::AccountId>>::total_issuance());
+				let total_issuance: BalanceOf<T> = <<T as pallet::Config>::Currency as Currency<T::AccountId>>::total_issuance();
 				let (to_mint, extra) = <T as Config>::EraPayout::era_payout(total_staked, total_issuance, <T as Config>::MillisecondsPerEra::get());
-				let total: BalanceOf<T> = to_mint + extra;
+				let total = to_mint + extra;
 
-				// Mint tokens (inflation)
+				// Mint tokens (inflation) to inflation pot
 				let inflation_pot = Self::account_id();
-				// <T as Config>::Currency::mint_into(&inflation_pot, < as frame_support::traits::fungible::Inspect::Balance::from(total));
+				<T as Config>::Currency::deposit_creating(&inflation_pot, total);
+
+				Self::deposit_event(Event::<T>::InflationEvent(inflation_pot, total));
 			}
 
 			// to get rid of error for now
+			// TODO: Add weight
 			100
 		}
 	}
@@ -234,9 +246,6 @@ pub mod pallet {
 
 			Ok(().into())
 		}
-
-
-
 
 
 
