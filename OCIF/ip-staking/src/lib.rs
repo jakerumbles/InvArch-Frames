@@ -44,7 +44,7 @@ pub mod pallet {
 			traits::{Currency, ReservableCurrency, fungible::{Mutate, Inspect}}, PalletId, Blake2_128Concat};
 	use frame_system::pallet_prelude::*;
 	use core::iter::Sum;
-	use pallet_staking::EraPayout;
+	use pallet_staking::{EraPayout};
 
 	// pub type BalanceOf<T> = <T as pallet::Config>::Balance;
 	pub type BalanceOf<T> = <<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
@@ -136,7 +136,36 @@ pub mod pallet {
 	#[pallet::getter(fn registered_ips)]
 	pub type RegisteredIps<T> = StorageMap<_, Blake2_128Concat, IpsIdOf<T>, IpsStakeInfo<BalanceOf<T>>>;
 
+	// Set up initial storage values when chain starts up the first time
+	#[pallet::genesis_config]
+	pub struct GenesisConfig<T: Config> {
+		pub total_staked: BalanceOf<T>,
+		pub current_era: Era,
+		pub last_payout_block: BlockNumberOf<T>,
+	}
 
+	#[cfg(feature = "std")]
+	impl<T: Config> Default for GenesisConfig<T> {
+		fn default() -> Self {
+			Self { 
+				total_staked: Default::default(), 
+				current_era: Default::default(), 
+				last_payout_block: Default::default() 
+			}
+		}
+	}
+
+	#[pallet::genesis_build]
+	impl<T: Config> GenesisBuild<T> for GenesisConfig<T> {
+		fn build(&self) {
+			<TotalStaked<T>>::put(&self.total_staked);
+			<CurrentEra<T>>::put(&self.current_era);
+			<LastPayoutBlock<T>>::put(&self.last_payout_block);
+			// for (a, b) in &self.account_map {
+			// 	<AccountMap<T>>::insert(a, b);
+			// }
+		}
+	}
 
 	// Pallets use events to inform users when important changes are made.
 	#[pallet::event]
