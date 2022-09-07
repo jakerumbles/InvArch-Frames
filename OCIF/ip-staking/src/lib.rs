@@ -28,20 +28,20 @@ use primitives::{Parentage, ocif::IpsStakeInfo, utils::*};
 
 pub use pallet::*;
 
-// #[cfg(test)]
-// mod mock;
+#[cfg(test)]
+mod mock;
 
-// #[cfg(test)]
-// mod tests;
+#[cfg(test)]
+mod tests;
 
-// #[cfg(feature = "runtime-benchmarks")]
-// mod benchmarking;
+#[cfg(feature = "runtime-benchmarks")]
+mod benchmarking;
 
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
 	use frame_support::{dispatch::{DispatchResultWithPostInfo, DispatchErrorWithPostInfo}, pallet_prelude::{*, StorageMap, ValueQuery, StorageValue}, 
-			traits::{Currency, ReservableCurrency, fungible::{Mutate, Inspect}}, PalletId, Blake2_128Concat};
+			traits::{Currency, ReservableCurrency, fungible::{Mutate, Inspect}}, PalletId, Blake2_128Concat, BoundedVec};
 	use frame_system::pallet_prelude::*;
 	use core::iter::Sum;
 	use pallet_staking::{EraPayout};
@@ -51,6 +51,7 @@ pub mod pallet {
 	pub type AccountIdOf<T> = <T as frame_system::Config>::AccountId;
 	pub type IpsIdOf<T> = <T as pallet_inv4::Config>::IpId;
 	pub type BlockNumberOf<T> = <T as frame_system::Config>::BlockNumber;
+	pub type IpsStakeInfoOf<T> = IpsStakeInfo<BalanceOf<T>, BlockNumberOf<T>, BoundedVec<AccountIdOf<T>, <T as Config>::MaxStakersPerIps>>;
 	pub type Era = u32;
 
 	use pallet_inv4::{self as inv4};
@@ -112,8 +113,13 @@ pub mod pallet {
 		#[pallet::constant]
 		type BlocksPerEra: Get<u32>;
 
+		/// The number of eras before an account gets its tokens back after calling unstake
 		#[pallet::constant]
 		type UnbondingPeriod: Get<Era>;
+
+		/// 
+		#[pallet::constant]
+		type MaxStakersPerIps: Get<u32>;
 	}
 
 	#[pallet::pallet]
@@ -134,7 +140,7 @@ pub mod pallet {
 
 	#[pallet::storage]
 	#[pallet::getter(fn registered_ips)]
-	pub type RegisteredIps<T> = StorageMap<_, Blake2_128Concat, IpsIdOf<T>, IpsStakeInfo<BalanceOf<T>>>;
+	pub type RegisteredIps<T> = StorageMap<_, Blake2_128Concat, IpsIdOf<T>, IpsStakeInfoOf<T>>;
 
 	// Set up initial storage values when chain starts up the first time
 	#[pallet::genesis_config]
@@ -171,8 +177,8 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		IpsRegistered(IpsIdOf<T>),
-		InflationEvent(AccountIdOf<T>, BalanceOf<T>),
+		IpsRegistered{ips_id: IpsIdOf<T>},
+		InflationEvent{inflation_pot: AccountIdOf<T>, inflation_amount: BalanceOf<T>},
 	}
 
 	// Errors inform users that something went wrong.
@@ -210,7 +216,11 @@ pub mod pallet {
 				let inflation_pot = Self::account_id();
 				<T as Config>::Currency::deposit_creating(&inflation_pot, total);
 
-				Self::deposit_event(Event::<T>::InflationEvent(inflation_pot, total));
+				Self::deposit_event(Event::<T>::InflationEvent{ inflation_pot, inflation_amount: total });
+
+				// Update storage
+				let current_block_number = frame_system::Pallet::<T>::block_number();
+				LastPayoutBlock::<T>::put(current_block_number);
 			}
 
 			// to get rid of error for now
@@ -232,6 +242,7 @@ pub mod pallet {
 			// Ensure IPS exists
 			ensure!(!ips.clone().is_none(), Error::<T>::IpsNotExist);
 
+			
 			// Ensure that `innovator` is the IPS owner. Register can only be called through IPS multisig call
 			let derived_address = multi_account_id::<T, T::IpId>(ips_id.clone(), None);
 			ensure!(innovator == derived_address, Error::<T>::NoPermission);
@@ -247,7 +258,18 @@ pub mod pallet {
             //     Parentage::Child(_, _) => ensure!(false, Error::<T>::NotParent)
             // };
 
+			let current_block_number = frame_system::Pallet::<T>::block_number();
+
+			// Register IPS
+			let registered_ips: IpsStakeInfoOf<T> = IpsStakeInfo {
+				total_stake: BalanceOf::<T>::from(0u32),
+				block_registered_at: current_block_number,
+				stakers: BoundedVec::default(),
+			};
 			
+			RegisteredIps::<T>::insert(ips_id, registered_ips);
+
+			Self::deposit_event(Event::<T>::IpsRegistered{ ips_id });
 
 			Ok(().into())
 		}
@@ -263,7 +285,12 @@ pub mod pallet {
 		/// Stake towards an IPS
 		#[pallet::weight(1)]
 		pub fn stake(origin: OriginFor<T>, ips_id: T::IpsId, value: BalanceOf<T>) -> DispatchResultWithPostInfo {
-			let innovator = ensure_signed(origin)?;
+			let staker = ensure_signed(origin)?;
+
+			// let ips = inv4::Pallet::<T>::ips_storage(ips_id);
+
+			// Ensure IPS exists
+			// ensure!(!ips.clone().is_none(), Error::<T>::IpsNotExist);
 
 			Ok(().into())
 		}
