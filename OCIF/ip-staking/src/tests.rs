@@ -2,6 +2,7 @@ use crate::{mock::*, Error};
 // use alloc::vec;
 use frame_support::{assert_noop, assert_ok};
 use inv4::AnyIdOf;
+use crate::pallet::Call as IpStakingCall;
 // use frame_system::Origin;
 use primitives::*;
 
@@ -59,15 +60,15 @@ use primitives::*;
 #[test]
 fn ips_registered() {
 	ExtBuilder::default().build().execute_with(|| {
-		let id = INV4::next_ips_id();
-		assert_eq!(id, 0);
+		let ips_id = INV4::next_ips_id();
+		assert_eq!(ips_id, 0);
 
 		// Create an IP set
 		let metadata: Vec<u8> = vec![1u8, 2u8, 3u8];
 		let assets: Vec<AnyIdOf<Test>> = vec![];
 
 		assert_ok!(INV4::create_ips(
-			Origin::signed(1),
+			Origin::signed(ALICE),
 			metadata,
 			assets,
 			false,
@@ -77,6 +78,14 @@ fn ips_registered() {
 			false
 		));
 		
-		assert_ne!(INV4::ips_storage(id), None);
+		assert_ne!(INV4::ips_storage(ips_id), None);
+
+		// Register IP set for IP staking
+		let call = Call::IpStaking(IpStakingCall::register {
+			ips_id
+		});
+		assert_ok!(INV4::operate_multisig(Origin::signed(ALICE), false, (ips_id, None), Box::new(call)));
+
+		assert_ne!(IpStaking::registered_ips(ips_id), None);
 	});
 }

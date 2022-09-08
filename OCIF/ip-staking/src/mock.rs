@@ -88,8 +88,8 @@ pub const DAYS: BlockNumber = HOURS * 24;
 /// The existential deposit. Set to 1/10 of the Connected Relay Chain
 pub const EXISTENTIAL_DEPOSIT: Balance = MILLIUNIT;
 
-pub const ALICE: u32 = 1;
-pub const BOB: u32 = 2;
+pub const ALICE: u128 = 1;
+pub const BOB: u128 = 2;
 
 pub struct WeightToFee;
 impl WeightToFeePolynomial for WeightToFee {
