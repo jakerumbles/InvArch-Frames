@@ -1,8 +1,9 @@
 use crate::{mock::*, Error};
+// use alloc::vec;
 use frame_support::{assert_noop, assert_ok};
+use inv4::AnyIdOf;
 // use frame_system::Origin;
 use primitives::*;
-use sp_runtime::AccountId32;
 
 // #[test]
 // fn it_works_for_default_value() {
@@ -22,18 +23,60 @@ use sp_runtime::AccountId32;
 // 	});
 // }
 
-#[test]
-fn jake_test() {
-	new_test_ext().execute_with(|| {
-		// assert_eq(1 == 2, Error::<Test>::Overflow);
-		assert_eq!(1, 2);
-	});
-}
+// #[test]
+// fn jake_test() {
+// 	new_test_ext().execute_with(|| {
+// 		// assert_eq(1 == 2, Error::<Test>::Overflow);
+// 		assert_eq!(1, 2);
+// 	});
+// }
+
+// #[test]
+// fn ips_registered_old() {
+// 	new_test_ext().execute_with(|| {
+// 		let id = INV4::next_ips_id();
+// 		assert_eq!(id, 0);
+// 		// Create an IP set
+// 		let metadata: Vec<u8> = vec![1u8, 2u8, 3u8];
+// 		let assets: Vec<AnyIdOf<Test>> = vec![];
+
+// 		assert_ok!(INV4::create_ips(
+// 			Origin::signed(1),
+// 			metadata,
+// 			assets,
+// 			false,
+// 			InvArchLicenses::Apache2,
+// 			OneOrPercent::One,
+// 			OneOrPercent::One,
+// 			false
+// 		));
+		
+// 		assert_ne!(INV4::ips_storage(0), None);
+
+// 	});
+// }
 
 #[test]
 fn ips_registered() {
-	new_test_ext().execute_with(|| {
+	ExtBuilder::default().build().execute_with(|| {
+		let id = INV4::next_ips_id();
+		assert_eq!(id, 0);
+
 		// Create an IP set
-		INV4::create_ips(Origin::signed(1), vec![], vec![], false, InvArchLicenses::Apache2, OneOrPercent::One, OneOrPercent::One, true);
+		let metadata: Vec<u8> = vec![1u8, 2u8, 3u8];
+		let assets: Vec<AnyIdOf<Test>> = vec![];
+
+		assert_ok!(INV4::create_ips(
+			Origin::signed(1),
+			metadata,
+			assets,
+			false,
+			InvArchLicenses::Apache2,
+			OneOrPercent::One,
+			OneOrPercent::One,
+			false
+		));
+		
+		assert_ne!(INV4::ips_storage(id), None);
 	});
 }

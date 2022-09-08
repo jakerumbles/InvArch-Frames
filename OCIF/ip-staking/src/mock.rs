@@ -36,7 +36,8 @@ pub type Signature = MultiSignature;
 
 /// Some way of identifying an account on the chain. We intentionally make it equivalent
 /// to the public key of our transaction signing scheme.
-pub type AccountId = <<Signature as Verify>::Signer as IdentifyAccount>::AccountId;
+// pub type AccountId = <<Signature as Verify>::Signer as IdentifyAccount>::AccountId;
+pub type AccountId = u128;
 
 /// Balance of an account.
 pub type Balance = u128;
@@ -122,7 +123,7 @@ impl frame_system::Config for Test {
 	type BlockNumber = BlockNumber;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
-	type AccountId = AccountId;
+	type AccountId = u128;
 	type Lookup = IdentityLookup<Self::AccountId>;
 	type Header = generic::Header<BlockNumber, BlakeTwo256>;
 	type Event = Event;
@@ -636,7 +637,40 @@ frame_support::construct_runtime!(
 	}
 );
 
-// Build genesis storage according to the mock runtime.
-pub fn new_test_ext() -> sp_io::TestExternalities {
-	frame_system::GenesisConfig::default().build_storage::<Test>().unwrap().into()
+// // Build genesis storage according to the mock runtime.
+// pub fn new_test_ext() -> sp_io::TestExternalities {
+// 	frame_system::GenesisConfig::default().build_storage::<Test>().unwrap().into()
+// }
+
+pub struct ExtBuilder;
+
+impl Default for ExtBuilder {
+    fn default() -> Self {
+        ExtBuilder
+    }
+}
+
+impl ExtBuilder {
+    pub fn build(self) -> sp_io::TestExternalities {
+        let mut t = frame_system::GenesisConfig::default()
+            .build_storage::<Test>()
+            .unwrap();
+
+        pallet_balances::GenesisConfig::<Test> {
+            balances: vec![
+                (1, 10000000000),
+                (2, 1000000000),
+                (3, 1000000000),
+                (4, 1000000000),
+                (5, 1000000000),
+                (6, 1000000000)
+            ],
+        }
+        .assimilate_storage(&mut t)
+        .unwrap();
+
+        let mut ext = sp_io::TestExternalities::new(t);
+        ext.execute_with(|| System::set_block_number(1));
+        ext
+    }
 }
