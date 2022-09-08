@@ -3,6 +3,7 @@ use frame_support::{parameter_types, traits::{Everything, AsEnsureOriginWithArg}
                     weights::{WeightToFeePolynomial, WeightToFeeCoefficients, WeightToFeeCoefficient, constants::ExtrinsicBaseWeight}};
 use frame_system as system;
 use frame_system::{EnsureRoot, EnsureSigned};
+use pallet_balances::Account;
 use sp_core::H256;
 use sp_runtime::{
 	testing::Header,
@@ -11,6 +12,7 @@ use sp_runtime::{
     Perbill,
     MultiSignature,
     generic,
+    AccountId32,
 };
 use codec::{Decode, Encode};
 use pallet_staking::ConvertCurve;
@@ -84,6 +86,9 @@ pub const DAYS: BlockNumber = HOURS * 24;
 
 /// The existential deposit. Set to 1/10 of the Connected Relay Chain
 pub const EXISTENTIAL_DEPOSIT: Balance = MILLIUNIT;
+
+pub const ALICE: u32 = 1;
+pub const BOB: u32 = 2;
 
 pub struct WeightToFee;
 impl WeightToFeePolynomial for WeightToFee {
