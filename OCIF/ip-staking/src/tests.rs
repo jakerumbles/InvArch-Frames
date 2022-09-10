@@ -29,6 +29,28 @@ fn stake_to_ips() {
 	});
 }
 
+#[test]
+fn staking_below_min_amount_should_fail() {
+	ExtBuilder::default().build().execute_with(|| {
+		let ips_id = create_ips();
+		assert_ok!(register_ips(ips_id));
+
+		// Stake to IP set with 1 below `MinStakingAmount`. `stake` call should return error
+		assert_noop!(IpStaking::stake(Origin::signed(BOB), ips_id, 999_999_999_999), Error::<Test>::BelowMinAmount);
+	});
+}
+
+#[test]
+fn staking_to_non_registered_ips_should_fail() {
+	ExtBuilder::default().build().execute_with(|| {
+		let ips_id = create_ips();
+		// IP set is created, but not registered
+
+		// Stake to IP set with 1 above `MinStakingAmount`. IP set is not registered so `stake` call should return error
+		assert_noop!(IpStaking::stake(Origin::signed(BOB), ips_id, 1_000_000_000_001), Error::<Test>::IpsNotRegistered);
+	});
+}
+
 fn create_ips() -> u32 {
 	let ips_id = INV4::next_ips_id();
 		assert_eq!(ips_id, 0);

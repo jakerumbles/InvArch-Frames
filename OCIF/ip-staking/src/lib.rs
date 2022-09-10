@@ -205,6 +205,8 @@ pub mod pallet {
 		BelowMinAmount,
 		/// Error adding account as staker to IP set
 		FailedAddingStaker,
+		/// IP set is not registered for staking
+		IpsNotRegistered,
 	}
 
 	#[pallet::hooks]
@@ -242,7 +244,6 @@ pub mod pallet {
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-
 		/// Register an IPS for IP Staking
 		#[pallet::weight(1)]
 		pub fn register(origin: OriginFor<T>, ips_id: T::IpId) -> DispatchResultWithPostInfo {
@@ -297,7 +298,8 @@ pub mod pallet {
 			let staker = ensure_signed(origin)?;
 
 			// Ensure IPS is registered for staking
-			let ips = Self::registered_ips(ips_id).ok_or(Error::<T>::IpDoesntExist);
+			// let ips = Self::registered_ips(ips_id).ok_or(Error::<T>::IpsNotRegistered);
+			ensure!(Self::registered_ips(ips_id).is_some(), Error::<T>::IpsNotRegistered);
 
 			// Ensure account is staking above set minimum
 			ensure!(value >= <T as Config>::MinStakingAmount::get(), Error::<T>::BelowMinAmount);
