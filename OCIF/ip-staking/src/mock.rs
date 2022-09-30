@@ -162,7 +162,7 @@ parameter_types! {
     pub const MillisecondsPerEra: u64 = (DAYS as u64) * MILLISECS_PER_BLOCK;
     pub const BlocksPerEra: u32 = 1;
     pub const UnbondingPeriod: u32 = 1;
-    pub const MaxStakersPerIps: u32 = 100_000;
+    pub const MaxStakersPerIps: u32 = 1_000_000;
 }
 
 impl ip_staking::Config for Test {

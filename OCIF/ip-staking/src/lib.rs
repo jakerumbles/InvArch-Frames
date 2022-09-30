@@ -40,7 +40,7 @@ mod benchmarking;
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-	use frame_support::{dispatch::{DispatchResultWithPostInfo, DispatchErrorWithPostInfo}, pallet_prelude::{*, StorageMap, ValueQuery, StorageValue, DispatchResult}, 
+	use frame_support::{dispatch::{DispatchResultWithPostInfo, DispatchErrorWithPostInfo}, pallet_prelude::{*, StorageMap, StorageDoubleMap, ValueQuery, OptionQuery, StorageValue, DispatchResult}, 
 			traits::{Currency, ReservableCurrency, fungible::{Mutate, Inspect}}, PalletId, Blake2_128Concat, BoundedVec};
 	use frame_system::pallet_prelude::*;
 	use core::iter::Sum;
@@ -52,7 +52,7 @@ pub mod pallet {
 	pub type AccountIdOf<T> = <T as frame_system::Config>::AccountId;
 	pub type IpsIdOf<T> = <T as pallet_inv4::Config>::IpId;
 	pub type BlockNumberOf<T> = <T as frame_system::Config>::BlockNumber;
-	pub type IpsStakeInfoOf<T> = IpsStakeInfo<BalanceOf<T>, BlockNumberOf<T>, BoundedVec<AccountIdOf<T>, <T as Config>::MaxStakersPerIps>>;
+	pub type IpsStakeInfoOf<T> = IpsStakeInfo<BalanceOf<T>, BlockNumberOf<T>>;
 	pub type Era = u32;
 
 	use pallet_inv4::{self as inv4};
@@ -89,7 +89,7 @@ pub mod pallet {
 			+ From<u128>
 			+ From<<<Self as pallet::Config>::Currency as Currency<<Self as frame_system::Config>::AccountId>>::Balance>;
 
-		/// Proveds access to the `era_payout()` function which determines how much should be paid out to stakers per era
+		/// Provides access to the `era_payout()` function which determines how much should be paid out to stakers per era
 		type EraPayout: EraPayout<<<Self as Config>::Currency as Currency<<Self as frame_system::Config>::AccountId>>::Balance>;
 		// type EraPayout: EraPayout<<Self as Config>::Balance>;
 
@@ -119,7 +119,7 @@ pub mod pallet {
 		#[pallet::constant]
 		type UnbondingPeriod: Get<Era>;
 
-		/// 
+		/// This is the maximum number of accounts that can stake towards an IP set in any given era
 		#[pallet::constant]
 		type MaxStakersPerIps: Get<u32>;
 	}
@@ -128,25 +128,35 @@ pub mod pallet {
 	#[pallet::generate_store(pub trait Store)]
 	pub struct Pallet<T>(_);
 
+	/// The number of tokens staked in the system. In other words, the sum of the tokens staked to each IP set, for all IP sets.
 	#[pallet::storage]
 	#[pallet::getter(fn total_staked)]
 	pub type TotalStaked<T> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
+	/// Keeps track of the current era. Staking rewards are calculated per era.
 	#[pallet::storage]
 	#[pallet::getter(fn current_era)]
 	pub type CurrentEra<T> = StorageValue<_, u32, ValueQuery>;
 
+	/// Keeps track of the most recent block where staking rewards were calculated
 	#[pallet::storage]
 	#[pallet::getter(fn last_payout_block)]
 	pub type LastPayoutBlock<T> = StorageValue<_, BlockNumberOf<T>, ValueQuery>;
 
+	/// Keeps track of which IP sets are registered for the IP staking system
 	#[pallet::storage]
 	#[pallet::getter(fn registered_ips)]
 	pub type RegisteredIps<T> = StorageMap<_, Blake2_128Concat, IpsIdOf<T>, IpsStakeInfoOf<T>>;
 
+	/// Keeps track of which accounts are staking towards a given IP set
 	#[pallet::storage]
 	#[pallet::getter(fn ips_stakers)]
 	pub type IpsStakers<T: Config> = StorageMap<_, Blake2_128Concat, IpsIdOf<T>, BoundedVec<AccountIdOf<T>, T::MaxStakersPerIps>, ValueQuery>;
+
+	/// Keeps track of how much, if any, a given account is staking towards a given IP set, per era
+	#[pallet::storage]
+	#[pallet::getter(fn stake_by_era)]
+	pub type StakeByEra<T: Config> = StorageDoubleMap<_, Blake2_128Concat, IpsIdOf<T>, Blake2_128Concat, AccountIdOf<T>, BoundedVec<(Era, BalanceOf<T>), T::MaxStakersPerIps>, ValueQuery>;
 
 
 	// Set up initial storage values when chain starts up the first time
@@ -184,8 +194,8 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		IpsRegistered{ips_id: IpsIdOf<T>},
-		InflationEvent{inflation_pot: AccountIdOf<T>, inflation_amount: BalanceOf<T>},
+		IpsRegistered{ ips_id: IpsIdOf<T> },
+		InflationEvent{ inflation_pot: AccountIdOf<T>, inflation_amount: BalanceOf<T> },
 	}
 
 	// Errors inform users that something went wrong.
@@ -222,12 +232,13 @@ pub mod pallet {
 				// Compute inflation for previous era
 				let total_staked: BalanceOf<T> = Self::total_staked();
 				let total_issuance: BalanceOf<T> = <<T as pallet::Config>::Currency as Currency<T::AccountId>>::total_issuance();
-				let (to_mint, extra) = <T as Config>::EraPayout::era_payout(total_staked, total_issuance, <T as Config>::MillisecondsPerEra::get());
+				let (to_mint, extra) =
+					<T as Config>::EraPayout::era_payout(total_staked, total_issuance, <T as Config>::MillisecondsPerEra::get());
 				let total = to_mint + extra;
 
 				// Mint tokens (inflation) to inflation pot
-				let inflation_pot = Self::account_id();
-				<T as Config>::Currency::deposit_creating(&inflation_pot, total);
+				let inflation_pot: T::AccountId = Self::account_id();
+				<T as Config>::Currency::deposit_creating(&inflation_pot, total.clone());
 
 				Self::deposit_event(Event::<T>::InflationEvent{ inflation_pot, inflation_amount: total });
 
@@ -273,7 +284,6 @@ pub mod pallet {
 			let registered_ips: IpsStakeInfoOf<T> = IpsStakeInfo {
 				total_stake: BalanceOf::<T>::from(0u32),
 				block_registered_at: current_block_number,
-				stakers: BoundedVec::default(),
 			};
 			
 			// Update storage
@@ -292,9 +302,9 @@ pub mod pallet {
 			Ok(().into())
 		}
 
-		/// Stake towards an IPS
+		/// Stake towards an IPS. Staking of new funds will begin at the current era + 1
 		#[pallet::weight(1)]
-		pub fn stake(origin: OriginFor<T>, ips_id: T::IpId, value: BalanceOf<T>) -> DispatchResultWithPostInfo {
+		pub fn stake(origin: OriginFor<T>, ips_id: T::IpId, amount: BalanceOf<T>) -> DispatchResultWithPostInfo {
 			let staker = ensure_signed(origin)?;
 
 			// Ensure IPS is registered for staking
@@ -302,7 +312,7 @@ pub mod pallet {
 			ensure!(Self::registered_ips(ips_id).is_some(), Error::<T>::IpsNotRegistered);
 
 			// Ensure account is staking above set minimum
-			ensure!(value >= <T as Config>::MinStakingAmount::get(), Error::<T>::BelowMinAmount);
+			ensure!(amount >= <T as Config>::MinStakingAmount::get(), Error::<T>::BelowMinAmount);
 
 			// Update storage
 			IpsStakers::<T>::try_mutate(ips_id, |bvec| {
@@ -310,8 +320,65 @@ pub mod pallet {
 				bvec.try_push(staker.clone())
 			}).map_err(|_| Error::<T>::FailedAddingStaker)?;
 
+			// 1. If account has no stake record on IPS
+			// 		- push on tuple (current era + 1, stake)
+			// 2. Else If account already has stake record (even 0 stake) on IPS
+			//  	- pop off tuple from StakeByEra and update staking value (+ for stake, - for unstake)
+			//		- Push on tuple (current era + 1, stake)
+
+			let current_era = Self::current_era();
+
+			// Update staking info
+			match Self::stake_by_era(ips_id, staker.clone()).pop() {
+				// Account has staked to this IPS before
+				Some(v) => {
+					let era = v.0;
+					let existing_stake = v.1;
+
+					// Push on new record
+					if era <= current_era {
+						let new_staking_record = (current_era + 1, existing_stake + amount);
+						StakeByEra::<T>::try_mutate(ips_id, staker.clone(), |bvec| -> DispatchResult {
+							bvec.try_push(new_staking_record).unwrap();
+							Ok(())
+						})?;
+					}
+					// Pop off latest record, update, and push back on
+					else if era == current_era + 1 {
+						StakeByEra::<T>::try_mutate(ips_id, staker.clone(), |bvec| -> DispatchResult {
+							match bvec.pop() {
+								Some(v) => {
+									let updated_staking_record = (v.0, v.1 + amount);
+									bvec.try_push(updated_staking_record).unwrap();
+								}
+								// Should always be Some
+								None => { return Err(Error::<T>::FailedAddingStaker.into()); }
+							}
+							Ok(())
+						})?;
+					}
+					else {
+						return Err(Error::<T>::FailedAddingStaker.into());
+					}	
+				}
+				// Account has never staked to this IPS before
+				None => {
+					let new_stake = (current_era + 1, amount);
+
+					StakeByEra::<T>::try_mutate(ips_id, staker.clone(), |bvec| -> DispatchResult {
+						// TODO: Don'know if error handling is correct here
+						bvec.try_push(new_stake).unwrap();
+						Ok(())
+					})?;
+				}
+			}
+			
+			// TODO: Update IpsStakeInfoOf struct with correct total_stake
+
 			// Reserve accounts tokens they are staking
-			<T as Config>::Currency::reserve(&staker, value)?;
+			<T as Config>::Currency::reserve(&staker, amount)?;
+
+			// TODO: Emit staking event
 
 			Ok(().into())
 		}
@@ -375,6 +442,7 @@ pub mod pallet {
 	}
 
 	impl<T: Config> Pallet<T> {
+		/// Return the current era #, and then increment it by 1
 		fn increment_era() -> Era {
 			let mut old_era = 0;
 			let _ = CurrentEra::<T>::try_mutate(|era| -> DispatchResult {
@@ -389,6 +457,7 @@ pub mod pallet {
 			old_era
 		}
 
+		/// Get the IP staking pallet pot account ID
 		fn account_id() -> T::AccountId {
 			T::PalletId::get().into_account_truncating()
 		}

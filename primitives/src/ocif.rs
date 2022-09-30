@@ -4,8 +4,8 @@ use scale_info::prelude::vec::Vec;
 use sp_runtime::BoundedVec;
 
 #[derive(Encode, Decode, Clone, Eq, PartialEq, MaxEncodedLen, Debug, TypeInfo)]
-pub struct IpsStakeInfo<Balance, BlockNumber, BVec> {
+pub struct IpsStakeInfo<Balance, BlockNumber> {
     pub total_stake: Balance,
     pub block_registered_at: BlockNumber,
-    pub stakers: BVec,
+    // pub stakers: BVec,
 }

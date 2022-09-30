@@ -26,6 +26,15 @@ fn stake_to_ips() {
 
 		let stakers_vec = IpStaking::ips_stakers(ips_id);
 		assert!(stakers_vec.contains(&BOB));
+
+		let stakers_by_era = IpStaking::stake_by_era(ips_id, BOB);
+		assert!(stakers_by_era.contains(&(1, 1_000_000_000_001)));
+
+		// Stake a 2nd time in era 0
+		assert_ok!(IpStaking::stake(Origin::signed(BOB), ips_id, 1_000_000_000_000));
+
+		let stakers_by_era = IpStaking::stake_by_era(ips_id, BOB);
+		assert_eq!(stakers_by_era.last().unwrap(), &(1, 2_000_000_000_001));
 	});
 }
 
