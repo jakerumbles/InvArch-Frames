@@ -43,6 +43,7 @@ pallet-staking = { git = 'https://github.com/paritytech/substrate.git', branch =
 # sp-core = { git = "https://github.com/paritytech/substrate", default-features = false, branch = "polkadot-v0.9.26" }
 # sp-io = { git = "https://github.com/paritytech/substrate", default-features = false, branch = "polkadot-v0.9.26" }
 # sp-runtime = { git = "https://github.com/paritytech/substrate", default-features = false, branch = "polkadot-v0.9.26" }
+pallet-timestamp = { git = "https://github.com/paritytech/substrate.git", default-features = false, branch = "polkadot-v0.9.26" }
 pallet-rmrk-core = { git = "https://github.com/Phala-Network/rmrk-substrate", default-features = false, branch = "polkadot-v0.9.26" }
 pallet-rmrk-equip = { git = "https://github.com/Phala-Network/rmrk-substrate", default-features = false, branch = "polkadot-v0.9.26" }
 pallet-uniques = { git = "https://github.com/paritytech/substrate", default-features = false, branch = "polkadot-v0.9.26" }
@@ -59,6 +60,7 @@ std = [
 	"frame-benchmarking/std",
 	"frame-support/std",
 	"frame-system/std",
+	"pallet-timestamp/std",
 	"pallet-balances/std",
 	"pallet-staking/std",
     "primitives/std",

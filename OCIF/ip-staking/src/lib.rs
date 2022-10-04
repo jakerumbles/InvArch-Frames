@@ -41,7 +41,7 @@ mod benchmarking;
 pub mod pallet {
 	use super::*;
 	use frame_support::{dispatch::{DispatchResultWithPostInfo, DispatchErrorWithPostInfo}, pallet_prelude::{*, StorageMap, StorageDoubleMap, ValueQuery, OptionQuery, StorageValue, DispatchResult}, 
-			traits::{Currency, ReservableCurrency, fungible::{Mutate, Inspect}}, PalletId, Blake2_128Concat, BoundedVec};
+			traits::{Currency, ReservableCurrency, LockableCurrency, fungible::{Mutate, Inspect}}, PalletId, Blake2_128Concat, BoundedVec};
 	use frame_system::pallet_prelude::*;
 	use core::iter::Sum;
 	use pallet_staking::{EraPayout};
@@ -74,7 +74,7 @@ pub mod pallet {
             + Clone;
 
 		/// Get access to the balances pallet
-		type Currency: Currency<Self::AccountId> + ReservableCurrency<Self::AccountId> + Mutate<Self::AccountId> + frame_support::traits::fungible::Inspect<Self::AccountId>;
+		type Currency: Currency<Self::AccountId> + LockableCurrency<Self::AccountId> + ReservableCurrency<Self::AccountId> + Mutate<Self::AccountId> + frame_support::traits::fungible::Inspect<Self::AccountId>;
 
 		type Balance: Member
 			+ Parameter
@@ -194,8 +194,9 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		IpsRegistered{ ips_id: IpsIdOf<T> },
-		InflationEvent{ inflation_pot: AccountIdOf<T>, inflation_amount: BalanceOf<T> },
+		IpsRegistered { ips_id: IpsIdOf<T> },
+		InflationEvent { inflation_pot: AccountIdOf<T>, inflation_amount: BalanceOf<T> },
+		NewStake { staker: AccountIdOf<T>, ips_id: IpsIdOf<T>, stake_amount: BalanceOf<T> },
 	}
 
 	// Errors inform users that something went wrong.
@@ -217,6 +218,8 @@ pub mod pallet {
 		FailedAddingStaker,
 		/// IP set is not registered for staking
 		IpsNotRegistered,
+		/// Calling account does not have enough free balance
+		NotEnoughFreeBalance
 	}
 
 	#[pallet::hooks]
@@ -308,15 +311,17 @@ pub mod pallet {
 			let staker = ensure_signed(origin)?;
 
 			// Ensure IPS is registered for staking
-			// let ips = Self::registered_ips(ips_id).ok_or(Error::<T>::IpsNotRegistered);
 			ensure!(Self::registered_ips(ips_id).is_some(), Error::<T>::IpsNotRegistered);
+
+			// Ensure account has enough funds to stake this amount
+			let free_balance = <<T as pallet::Config>::Currency as Currency<T::AccountId>>::free_balance(&staker);
+			ensure!(free_balance > amount, Error::<T>::NotEnoughFreeBalance);
 
 			// Ensure account is staking above set minimum
 			ensure!(amount >= <T as Config>::MinStakingAmount::get(), Error::<T>::BelowMinAmount);
 
 			// Update storage
 			IpsStakers::<T>::try_mutate(ips_id, |bvec| {
-				// let v: u32 = bvec.unwrap();
 				bvec.try_push(staker.clone())
 			}).map_err(|_| Error::<T>::FailedAddingStaker)?;
 
@@ -324,7 +329,7 @@ pub mod pallet {
 			// 		- push on tuple (current era + 1, stake)
 			// 2. Else If account already has stake record (even 0 stake) on IPS
 			//  	- pop off tuple from StakeByEra and update staking value (+ for stake, - for unstake)
-			//		- Push on tuple (current era + 1, stake)
+			//		- Push on tuple (current era + 1, updated stake)
 
 			let current_era = Self::current_era();
 
@@ -373,12 +378,19 @@ pub mod pallet {
 				}
 			}
 			
-			// TODO: Update IpsStakeInfoOf struct with correct total_stake
+			// Update IpsStakeInfo struct with correct total_stake
+			RegisteredIps::<T>::try_mutate(ips_id, |ips| -> DispatchResult {
+				let mut ips_obj = ips.take().ok_or(Error::<T>::IpsNotRegistered)?;
+				let updated_amount = ips_obj.total_stake + amount;
+				ips_obj.total_stake = updated_amount;
+				*ips = Some(ips_obj);
+				Ok(())
+			})?;
 
 			// Reserve accounts tokens they are staking
 			<T as Config>::Currency::reserve(&staker, amount)?;
 
-			// TODO: Emit staking event
+			Self::deposit_event(Event::<T>::NewStake{staker: staker, ips_id: ips_id, stake_amount: amount});
 
 			Ok(().into())
 		}

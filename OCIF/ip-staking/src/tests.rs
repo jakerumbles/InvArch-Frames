@@ -18,23 +18,77 @@ fn ips_registered() {
 #[test]
 fn stake_to_ips() {
 	ExtBuilder::default().build().execute_with(|| {
+		// ---ERA 0---
+
 		let ips_id = create_ips();
 		assert_ok!(register_ips(ips_id));
 
 		// Stake to IP set with 1 above `MinStakingAmount`
 		assert_ok!(IpStaking::stake(Origin::signed(BOB), ips_id, 1_000_000_000_001));
 
+		let mut ips_total_stake = IpStaking::registered_ips(ips_id).unwrap().total_stake;
+		assert_eq!(ips_total_stake, 1_000_000_000_001);
+
 		let stakers_vec = IpStaking::ips_stakers(ips_id);
 		assert!(stakers_vec.contains(&BOB));
 
-		let stakers_by_era = IpStaking::stake_by_era(ips_id, BOB);
-		assert!(stakers_by_era.contains(&(1, 1_000_000_000_001)));
+		// Test staking with no history
+		let stakers_by_era = IpStaking::stake_by_era(ips_id, BOB).into_inner();
+		let expected_vec1: Vec<(u32, u128)> = vec![(1, 1_000_000_000_001)];
+		assert_eq!(stakers_by_era, expected_vec1);
 
+		// Test staking multiple times in the same era
 		// Stake a 2nd time in era 0
 		assert_ok!(IpStaking::stake(Origin::signed(BOB), ips_id, 1_000_000_000_000));
 
-		let stakers_by_era = IpStaking::stake_by_era(ips_id, BOB);
-		assert_eq!(stakers_by_era.last().unwrap(), &(1, 2_000_000_000_001));
+		let stakers_by_era = IpStaking::stake_by_era(ips_id, BOB).into_inner();
+		let expected_vec2: Vec<(u32, u128)> = vec![(1, 2_000_000_000_001)];
+		assert_eq!(stakers_by_era, expected_vec2);
+
+		// Runtime is set to 1 era = 1 block for ease of testing
+		let mut block_number = frame_system::Pallet::<Test>::block_number();
+		// assert_eq!(block_number, 1);
+		// // Essentially saying, wait till first era is over, then continue
+		// while block_number < 2 {
+		// 	block_number = frame_system::Pallet::<Test>::block_number();
+		// }
+
+		assert_eq!(block_number, 1);
+		run_to_block(2);
+		block_number = frame_system::Pallet::<Test>::block_number();
+		assert_eq!(block_number, 2);
+
+		// ---Now in era 1---
+
+		// Test staking in a new era, but with a current non-zero stake value from a previous era
+		assert_ok!(IpStaking::stake(Origin::signed(BOB), ips_id, 1_000_000_000_000));
+
+		let stakers_by_era = IpStaking::stake_by_era(ips_id, BOB).into_inner();
+		let expected_vec3: Vec<(u32, u128)> = vec![(1, 2_000_000_000_001), (2, 3_000_000_000_001)];
+		assert_eq!(stakers_by_era, expected_vec3);
+
+		assert_eq!(block_number, 2);
+		run_to_block(12);
+		block_number = frame_system::Pallet::<Test>::block_number();
+		assert_eq!(block_number, 12);
+
+		// ---Now in era 11---
+
+		// Test staking in a new era, but with a current non-zero stake value from a previous era
+		assert_ok!(IpStaking::stake(Origin::signed(BOB), ips_id, 2_000_000_000_000));
+
+		let stakers_by_era = IpStaking::stake_by_era(ips_id, BOB).into_inner();
+		let expected_vec4: Vec<(u32, u128)> = vec![(1, 2_000_000_000_001), (2, 3_000_000_000_001), (12, 5_000_000_000_001)];
+		assert_eq!(stakers_by_era, expected_vec4);
+
+		ips_total_stake = IpStaking::registered_ips(ips_id).unwrap().total_stake;
+		assert_eq!(ips_total_stake, 5_000_000_000_001);
+
+		// Assert that the NewStake event is being emitted properly
+		System::assert_last_event(crate::Event::NewStake { staker: BOB, ips_id: 0, stake_amount: 2_000_000_000_000 }.into());
+
+		// TODO: Add a 2nd staker (ALICE) to this IPS
+
 	});
 }
 

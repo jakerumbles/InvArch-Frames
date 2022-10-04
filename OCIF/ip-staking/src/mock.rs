@@ -1,5 +1,5 @@
 // use crate as pallet_template;
-use frame_support::{parameter_types, traits::{Everything, AsEnsureOriginWithArg}, pallet_prelude::*, PalletId,
+use frame_support::{parameter_types, traits::{ConstU64, Everything, AsEnsureOriginWithArg}, pallet_prelude::*, PalletId,
                     weights::{WeightToFeePolynomial, WeightToFeeCoefficients, WeightToFeeCoefficient, constants::ExtrinsicBaseWeight}};
 use frame_system as system;
 use frame_system::{EnsureRoot, EnsureSigned};
@@ -616,6 +616,13 @@ impl pallet_rmrk_equip::Config for Test {
   type MaxCollectionsEquippablePerPart = MaxCollectionsEquippablePerPart;
 }
 
+impl pallet_timestamp::Config for Test {
+	type Moment = u64;
+	type OnTimestampSet = ();
+	type MinimumPeriod = ConstU64<5>;
+	type WeightInfo = ();
+}
+
 // Configure a mock runtime to test the pallet.
 frame_support::construct_runtime!(
 	pub enum Test where
@@ -625,6 +632,7 @@ frame_support::construct_runtime!(
 	{
 		System: frame_system::{Pallet, Call, Config, Storage, Event<T>},
         Balances: pallet_balances::{Pallet, Call, Storage, Config<T>, Event<T>},
+        Timestamp: pallet_timestamp::{Pallet, Call, Storage, Inherent},
 		// TemplateModule: pallet_template::{Pallet, Call, Storage, Event<T>},
         Ipf: pallet_ipf::{Pallet, Call, Storage, Event<T>},
 		INV4: inv4::{Pallet, Call, Storage, Event<T>},
@@ -674,4 +682,23 @@ impl ExtBuilder {
         ext.execute_with(|| System::set_block_number(1));
         ext
     }
+}
+
+pub const INIT_TIMESTAMP: u64 = 30_000;
+// pub const BLOCK_TIME: u64 = 1000;
+
+/// This will finalize the previous block, initialize up to the given block, essentially simulating
+/// a block import/propose process where we first initialize the block, then execute some stuff (not
+/// in the function), and then finalize the block.
+pub(crate) fn run_to_block(n: BlockNumber) {
+	IpStaking::on_finalize(System::block_number());
+	for b in (System::block_number() + 1)..=n {
+		System::set_block_number(b);
+		// Session::on_initialize(b);
+		<IpStaking as Hooks<BlockNumber>>::on_initialize(b);
+		Timestamp::set_timestamp(System::block_number() as u64 * MILLISECS_PER_BLOCK + INIT_TIMESTAMP);
+		if b != n {
+			IpStaking::on_finalize(System::block_number());
+		}
+	}
 }
