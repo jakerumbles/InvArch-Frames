@@ -47,11 +47,6 @@ fn stake_to_ips() {
 
 		// Runtime is set to 1 era = 1 block for ease of testing
 		let mut block_number = frame_system::Pallet::<Test>::block_number();
-		// assert_eq!(block_number, 1);
-		// // Essentially saying, wait till first era is over, then continue
-		// while block_number < 2 {
-		// 	block_number = frame_system::Pallet::<Test>::block_number();
-		// }
 
 		assert_eq!(block_number, 1);
 		run_to_block(2);

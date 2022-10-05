@@ -219,7 +219,9 @@ pub mod pallet {
 		/// IP set is not registered for staking
 		IpsNotRegistered,
 		/// Calling account does not have enough free balance
-		NotEnoughFreeBalance
+		NotEnoughFreeBalance,
+		/// Account has less tokens staked than it is trying to unstake
+		ValueGreaterThanStakedAmount,
 	}
 
 	#[pallet::hooks]
@@ -397,8 +399,26 @@ pub mod pallet {
 
 		/// Unstake from an IPS
 		#[pallet::weight(1)]
-		pub fn unstake(origin: OriginFor<T>, ips_id: T::IpId, value: BalanceOf<T>) -> DispatchResultWithPostInfo {
-			let innovator = ensure_signed(origin)?;
+		pub fn unstake(origin: OriginFor<T>, ips_id: T::IpId, amount: BalanceOf<T>) -> DispatchResultWithPostInfo {
+			let staker = ensure_signed(origin)?;
+
+			// Ensure IPS is registered for staking
+			ensure!(Self::registered_ips(ips_id).is_some(), Error::<T>::IpsNotRegistered);
+
+			// Ensure account has enough tokens staked on given IPS to unstake that much
+			let staked_amount = match Self::stake_by_era(ips_id, staker.clone()).pop() {
+				Some(v) => {
+					v.1
+				}
+				// Account has no stake so return 0
+				None => {
+					Zero::zero()
+				}
+			};
+			ensure!(amount <= staked_amount, Error::<T>::ValueGreaterThanStakedAmount);
+
+			// Ensure account is staking above set minimum
+			ensure!(amount >= <T as Config>::MinStakingAmount::get(), Error::<T>::BelowMinAmount);
 
 			Ok(().into())
 		}
@@ -410,47 +430,6 @@ pub mod pallet {
 
 			Ok(().into())
 		}
-
-
-
-
-
-		// /// An example dispatchable that takes a singles value as a parameter, writes the value to
-		// /// storage and emits an event. This function must be dispatched by a signed extrinsic.
-		// #[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
-		// pub fn do_something(origin: OriginFor<T>, something: u32) -> DispatchResultWithPostInfo {
-		// 	// Check that the extrinsic was signed and get the signer.
-		// 	// This function will return an error if the extrinsic is not signed.
-		// 	// https://docs.substrate.io/v3/runtime/origins
-		// 	let who = ensure_signed(origin)?;
-
-		// 	// Update storage.
-		// 	<Something<T>>::put(something);
-
-		// 	// Emit an event.
-		// 	Self::deposit_event(Event::SomethingStored(something, who));
-		// 	// Return a successful DispatchResultWithPostInfo
-		// 	Ok(().into())
-		// }
-
-		// /// An example dispatchable that may throw a custom error.
-		// #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1))]
-		// pub fn cause_error(origin: OriginFor<T>) -> DispatchResultWithPostInfo {
-		// 	let _who = ensure_signed(origin)?;
-
-		// 	// Read a value from storage.
-		// 	match <Something<T>>::get() {
-		// 		// Return an error if the value has not been set.
-		// 		None => Err(Error::<T>::NoneValue)?,
-		// 		Some(old) => {
-		// 			// Increment the value read from storage; will error in the event of overflow.
-		// 			let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-		// 			// Update the value in storage with the incremented result.
-		// 			<Something<T>>::put(new);
-		// 			Ok(().into())
-		// 		},
-		// 	}
-		// }
 	}
 
 	impl<T: Config> Pallet<T> {
