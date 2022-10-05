@@ -213,7 +213,7 @@ pub mod pallet {
 		/// Data type overflow
 		Overflow,
 		/// Value below minimum stake amount
-		BelowMinAmount,
+		BelowMinStakingAmount,
 		/// Error adding account as staker to IP set
 		FailedAddingStaker,
 		/// IP set is not registered for staking
@@ -222,6 +222,12 @@ pub mod pallet {
 		NotEnoughFreeBalance,
 		/// Account has less tokens staked than it is trying to unstake
 		ValueGreaterThanStakedAmount,
+		/// Account has no stake on this IP set
+		AccountHasNoStake,
+		/// Cannot unstake less than `MinStakingAmount`
+		BelowMinUnstakingAmount,
+		/// Unstake amount will result in accounts staked balance going below `MinStakingAmount`
+		StakingAmountTooLow,
 	}
 
 	#[pallet::hooks]
@@ -320,7 +326,7 @@ pub mod pallet {
 			ensure!(free_balance > amount, Error::<T>::NotEnoughFreeBalance);
 
 			// Ensure account is staking above set minimum
-			ensure!(amount >= <T as Config>::MinStakingAmount::get(), Error::<T>::BelowMinAmount);
+			ensure!(amount >= <T as Config>::MinStakingAmount::get(), Error::<T>::BelowMinStakingAmount);
 
 			// Update storage
 			IpsStakers::<T>::try_mutate(ips_id, |bvec| {
@@ -397,30 +403,31 @@ pub mod pallet {
 			Ok(().into())
 		}
 
-		/// Unstake from an IPS
+		/// Unstake a specific amount of tokens from an IPS for a given account
 		#[pallet::weight(1)]
-		pub fn unstake(origin: OriginFor<T>, ips_id: T::IpId, amount: BalanceOf<T>) -> DispatchResultWithPostInfo {
+		pub fn unstake_amount(origin: OriginFor<T>, ips_id: T::IpId, amount: BalanceOf<T>) -> DispatchResultWithPostInfo {
 			let staker = ensure_signed(origin)?;
 
-			// Ensure IPS is registered for staking
-			ensure!(Self::registered_ips(ips_id).is_some(), Error::<T>::IpsNotRegistered);
+			Self::unstake(staker, ips_id, amount)
+		}
 
-			// Ensure account has enough tokens staked on given IPS to unstake that much
+		/// Unstake all tokens from an IPS for a given account
+		#[pallet::weight(1)]
+		pub fn unstake_all(origin: OriginFor<T>, ips_id: T::IpId) -> DispatchResultWithPostInfo {
+			let staker = ensure_signed(origin)?;
+
+			// Get stakers total stake. If no stake then error
 			let staked_amount = match Self::stake_by_era(ips_id, staker.clone()).pop() {
 				Some(v) => {
 					v.1
 				}
 				// Account has no stake so return 0
 				None => {
-					Zero::zero()
+					return Err(Error::<T>::AccountHasNoStake.into());
 				}
 			};
-			ensure!(amount <= staked_amount, Error::<T>::ValueGreaterThanStakedAmount);
 
-			// Ensure account is staking above set minimum
-			ensure!(amount >= <T as Config>::MinStakingAmount::get(), Error::<T>::BelowMinAmount);
-
-			Ok(().into())
+			Self::unstake(staker, ips_id, staked_amount)
 		}
 
 		/// Claim tokens earned from IP staking
@@ -433,6 +440,33 @@ pub mod pallet {
 	}
 
 	impl<T: Config> Pallet<T> {
+		pub fn unstake(staker: AccountIdOf<T>, ips_id: T::IpId, unstake_amount: BalanceOf<T>) -> DispatchResultWithPostInfo {
+			// Ensure IPS is registered for staking
+			ensure!(Self::registered_ips(ips_id).is_some(), Error::<T>::IpsNotRegistered);
+
+			// Ensure `unstake_amount` is at least `MinStakingAmount`
+			ensure!(unstake_amount >= <T as Config>::MinStakingAmount::get(), Error::<T>::BelowMinUnstakingAmount);
+
+			// Ensure account has enough tokens staked on given IPS to unstake that much
+			let staked_amount = match Self::stake_by_era(ips_id, staker.clone()).pop() {
+				Some(v) => {
+					v.1
+				}
+				// Account has no stake so return 0
+				None => {
+					return Err(Error::<T>::AccountHasNoStake.into());
+				}
+			};
+			ensure!(unstake_amount <= staked_amount, Error::<T>::ValueGreaterThanStakedAmount);
+
+			// Ensure staking amount stays in valid range
+			ensure!(staked_amount - unstake_amount >= <T as Config>::MinStakingAmount::get() || staked_amount - unstake_amount == Zero::zero(), Error::<T>::StakingAmountTooLow);
+
+			
+
+			Ok(().into())
+		}
+
 		/// Return the current era #, and then increment it by 1
 		fn increment_era() -> Era {
 			let mut old_era = 0;

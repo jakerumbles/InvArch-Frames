@@ -94,7 +94,7 @@ fn staking_below_min_amount_should_fail() {
 		assert_ok!(register_ips(ips_id));
 
 		// Stake to IP set with 1 below `MinStakingAmount`. `stake` call should return error
-		assert_noop!(IpStaking::stake(Origin::signed(BOB), ips_id, 999_999_999_999), Error::<Test>::BelowMinAmount);
+		assert_noop!(IpStaking::stake(Origin::signed(BOB), ips_id, 999_999_999_999), Error::<Test>::BelowMinStakingAmount);
 	});
 }
 
@@ -106,6 +106,20 @@ fn staking_to_non_registered_ips_should_fail() {
 
 		// Stake to IP set with 1 above `MinStakingAmount`. IP set is not registered so `stake` call should return error
 		assert_noop!(IpStaking::stake(Origin::signed(BOB), ips_id, 1_000_000_000_001), Error::<Test>::IpsNotRegistered);
+	});
+}
+
+#[test]
+fn unstaking_below_min_amount_should_fail() {
+	ExtBuilder::default().build().execute_with(|| {
+		let ips_id = create_ips();
+		assert_ok!(register_ips(ips_id));
+
+		// Stake to IP set with MinStakingAmount
+		assert_ok!(IpStaking::stake(Origin::signed(BOB), ips_id, 1_000_000_000_000));
+
+		// Unstaking less than the MinStakingAmount should fail
+		assert_noop!(IpStaking::unstake_amount(Origin::signed(BOB), ips_id, 999_999_999_999), Error::<Test>::BelowMinUnstakingAmount);
 	});
 }
 
