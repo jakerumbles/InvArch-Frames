@@ -1,22 +1,28 @@
 // use crate as pallet_template;
-use frame_support::{parameter_types, traits::{ConstU64, Everything, AsEnsureOriginWithArg}, pallet_prelude::*, PalletId,
-                    weights::{WeightToFeePolynomial, WeightToFeeCoefficients, WeightToFeeCoefficient, constants::ExtrinsicBaseWeight}};
+use codec::{Decode, Encode};
+use frame_support::{
+    pallet_prelude::*,
+    parameter_types,
+    traits::{AsEnsureOriginWithArg, ConstU64, Everything},
+    weights::{
+        constants::ExtrinsicBaseWeight, WeightToFeeCoefficient, WeightToFeeCoefficients,
+        WeightToFeePolynomial,
+    },
+    PalletId,
+};
 use frame_system as system;
 use frame_system::{EnsureRoot, EnsureSigned};
 use pallet_balances::Account;
-use sp_core::H256;
-use sp_runtime::{
-	testing::Header,
-	traits::{BlakeTwo256, IdentityLookup, Verify, IdentifyAccount},
-    curve::PiecewiseLinear,
-    Perbill,
-    MultiSignature,
-    generic,
-    AccountId32,
-};
-use codec::{Decode, Encode};
 use pallet_staking::ConvertCurve;
 use smallvec::smallvec;
+use sp_core::H256;
+use sp_runtime::{
+    curve::PiecewiseLinear,
+    generic,
+    testing::Header,
+    traits::{BlakeTwo256, IdentifyAccount, IdentityLookup, Verify},
+    AccountId32, MultiSignature, Perbill,
+};
 
 use super::*;
 
@@ -106,52 +112,48 @@ impl WeightToFeePolynomial for WeightToFee {
     }
 }
 
-
 parameter_types! {
-	pub const BlockHashCount: BlockNumber = 1200;
-	pub const SS58Prefix: u8 = 42;
+    pub const BlockHashCount: BlockNumber = 1200;
+    pub const SS58Prefix: u8 = 42;
 }
 
 impl frame_system::Config for Test {
-	type BaseCallFilter = Everything;
-	type BlockWeights = ();
-	type BlockLength = ();
-	type DbWeight = ();
-	type Origin = Origin;
-	type Call = Call;
-	type Index = u64;
-	type BlockNumber = BlockNumber;
-	type Hash = H256;
-	type Hashing = BlakeTwo256;
-	type AccountId = u128;
-	type Lookup = IdentityLookup<Self::AccountId>;
-	type Header = generic::Header<BlockNumber, BlakeTwo256>;
-	type Event = Event;
-	type BlockHashCount = BlockHashCount;
-	type Version = ();
-	type PalletInfo = PalletInfo;
-	type AccountData = pallet_balances::AccountData<Balance>;
-	type OnNewAccount = ();
-	type OnKilledAccount = ();
-	type SystemWeightInfo = ();
-	type SS58Prefix = SS58Prefix;
-	type OnSetCode = ();
-	type MaxConsumers = frame_support::traits::ConstU32<16>;
+    type BaseCallFilter = Everything;
+    type BlockWeights = ();
+    type BlockLength = ();
+    type DbWeight = ();
+    type Origin = Origin;
+    type Call = Call;
+    type Index = u64;
+    type BlockNumber = BlockNumber;
+    type Hash = H256;
+    type Hashing = BlakeTwo256;
+    type AccountId = u128;
+    type Lookup = IdentityLookup<Self::AccountId>;
+    type Header = generic::Header<BlockNumber, BlakeTwo256>;
+    type Event = Event;
+    type BlockHashCount = BlockHashCount;
+    type Version = ();
+    type PalletInfo = PalletInfo;
+    type AccountData = pallet_balances::AccountData<Balance>;
+    type OnNewAccount = ();
+    type OnKilledAccount = ();
+    type SystemWeightInfo = ();
+    type SS58Prefix = SS58Prefix;
+    type OnSetCode = ();
+    type MaxConsumers = frame_support::traits::ConstU32<16>;
 }
-
-
-
 
 // REWARD_CURVE is used to calculate inflation
 pallet_staking_reward_curve::build! {
-	const REWARD_CURVE: PiecewiseLinear<'static> = curve!(
-		min_inflation: 0_030_000,
-		max_inflation: 0_100_000,
-		ideal_stake: 0_500_000,
-		falloff: 0_050_000,
-		max_piece_count: 100,
-		test_precision: 0_005_000,
-	);
+    const REWARD_CURVE: PiecewiseLinear<'static> = curve!(
+        min_inflation: 0_030_000,
+        max_inflation: 0_100_000,
+        ideal_stake: 0_500_000,
+        falloff: 0_050_000,
+        max_piece_count: 100,
+        test_precision: 0_005_000,
+    );
 }
 
 parameter_types! {
@@ -163,6 +165,9 @@ parameter_types! {
     pub const BlocksPerEra: u32 = 1;
     pub const UnbondingPeriod: u32 = 1;
     pub const MaxStakersPerIps: u32 = 1_000_000;
+    pub const MaxUniqueStakes: u8 = 10;
+    pub const IpsInflationPercentage: Perbill = Perbill::from_percent(60);
+    pub const StakerInflationPercentage: Perbill = Perbill::from_percent(40);
 }
 
 impl ip_staking::Config for Test {
@@ -178,6 +183,9 @@ impl ip_staking::Config for Test {
     type BlocksPerEra = BlocksPerEra;
     type UnbondingPeriod = UnbondingPeriod;
     type MaxStakersPerIps = MaxStakersPerIps;
+    type MaxUniqueStakes = MaxUniqueStakes;
+    type IpsInflationPercentage = IpsInflationPercentage;
+    type StakerInflationPercentage = StakerInflationPercentage;
 }
 
 #[allow(non_camel_case_types)]
@@ -551,14 +559,14 @@ parameter_types! {
 }
 
 impl pallet_rmrk_core::Config for Test {
-  type Event = Event;
-  type ProtocolOrigin = frame_system::EnsureRoot<AccountId>;
-  type MaxRecursions = MaxRecursions;
-  type ResourceSymbolLimit = ResourceSymbolLimit;
-  type PartsLimit = PartsLimit;
-  type MaxPriorities = MaxPriorities;
-  type CollectionSymbolLimit = CollectionSymbolLimit;
-  type MaxResourcesOnMint = MaxResourcesOnMint;
+    type Event = Event;
+    type ProtocolOrigin = frame_system::EnsureRoot<AccountId>;
+    type MaxRecursions = MaxRecursions;
+    type ResourceSymbolLimit = ResourceSymbolLimit;
+    type PartsLimit = PartsLimit;
+    type MaxPriorities = MaxPriorities;
+    type CollectionSymbolLimit = CollectionSymbolLimit;
+    type MaxResourcesOnMint = MaxResourcesOnMint;
 }
 
 parameter_types! {
@@ -573,22 +581,22 @@ parameter_types! {
 }
 
 impl pallet_uniques::Config for Test {
-  type Event = Event;
-  type CollectionId = CommonId;
-  type ItemId = CommonId;
-  type Currency = Balances;
-  type ForceOrigin = EnsureRoot<AccountId>;
-  type CreateOrigin = AsEnsureOriginWithArg<EnsureSigned<AccountId>>;
-  type Locker = pallet_rmrk_core::Pallet<Test>;
-  type CollectionDeposit = CollectionDeposit;
-  type ItemDeposit = ItemDeposit;
-  type MetadataDepositBase = UniquesMetadataDepositBase;
-  type AttributeDepositBase = AttributeDepositBase;
-  type DepositPerByte = DepositPerByte;
-  type StringLimit = UniquesStringLimit;
-  type KeyLimit = KeyLimit;
-  type ValueLimit = ValueLimit;
-  type WeightInfo = ();
+    type Event = Event;
+    type CollectionId = CommonId;
+    type ItemId = CommonId;
+    type Currency = Balances;
+    type ForceOrigin = EnsureRoot<AccountId>;
+    type CreateOrigin = AsEnsureOriginWithArg<EnsureSigned<AccountId>>;
+    type Locker = pallet_rmrk_core::Pallet<Test>;
+    type CollectionDeposit = CollectionDeposit;
+    type ItemDeposit = ItemDeposit;
+    type MetadataDepositBase = UniquesMetadataDepositBase;
+    type AttributeDepositBase = AttributeDepositBase;
+    type DepositPerByte = DepositPerByte;
+    type StringLimit = UniquesStringLimit;
+    type KeyLimit = KeyLimit;
+    type ValueLimit = ValueLimit;
+    type WeightInfo = ();
 }
 
 parameter_types! {
@@ -611,38 +619,38 @@ parameter_types! {
 }
 
 impl pallet_rmrk_equip::Config for Test {
-  type Event = Event;
-  type MaxPropertiesPerTheme = MaxPropertiesPerTheme;
-  type MaxCollectionsEquippablePerPart = MaxCollectionsEquippablePerPart;
+    type Event = Event;
+    type MaxPropertiesPerTheme = MaxPropertiesPerTheme;
+    type MaxCollectionsEquippablePerPart = MaxCollectionsEquippablePerPart;
 }
 
 impl pallet_timestamp::Config for Test {
-	type Moment = u64;
-	type OnTimestampSet = ();
-	type MinimumPeriod = ConstU64<5>;
-	type WeightInfo = ();
+    type Moment = u64;
+    type OnTimestampSet = ();
+    type MinimumPeriod = ConstU64<5>;
+    type WeightInfo = ();
 }
 
 // Configure a mock runtime to test the pallet.
 frame_support::construct_runtime!(
-	pub enum Test where
-		Block = Block,
-		NodeBlock = Block,
-		UncheckedExtrinsic = UncheckedExtrinsic,
-	{
-		System: frame_system::{Pallet, Call, Config, Storage, Event<T>},
+    pub enum Test where
+        Block = Block,
+        NodeBlock = Block,
+        UncheckedExtrinsic = UncheckedExtrinsic,
+    {
+        System: frame_system::{Pallet, Call, Config, Storage, Event<T>},
         Balances: pallet_balances::{Pallet, Call, Storage, Config<T>, Event<T>},
         Timestamp: pallet_timestamp::{Pallet, Call, Storage, Inherent},
-		// TemplateModule: pallet_template::{Pallet, Call, Storage, Event<T>},
+        // TemplateModule: pallet_template::{Pallet, Call, Storage, Event<T>},
         Ipf: pallet_ipf::{Pallet, Call, Storage, Event<T>},
-		INV4: inv4::{Pallet, Call, Storage, Event<T>},
-		IpStaking: ip_staking::{Pallet, Call, Storage, Event<T>},
+        INV4: inv4::{Pallet, Call, Storage, Event<T>},
+        IpStaking: ip_staking::{Pallet, Call, Storage, Event<T>},
 
         Uniques: pallet_uniques::{Pallet, Storage, Event<T>},
         RmrkCore: pallet_rmrk_core::{Pallet, Call, Event<T>, Storage},
         RmrkEquip: pallet_rmrk_equip::{Pallet, Call, Event<T>, Storage},
 
-	}
+    }
 );
 
 // // Build genesis storage according to the mock runtime.
@@ -672,7 +680,7 @@ impl ExtBuilder {
                 (3, 10_000_000_000_000),
                 (4, 10_000_000_000_000),
                 (5, 10_000_000_000_000),
-                (6, 10_000_000_000_000)
+                (6, 10_000_000_000_000),
             ],
         }
         .assimilate_storage(&mut t)
@@ -691,14 +699,16 @@ pub const INIT_TIMESTAMP: u64 = 30_000;
 /// a block import/propose process where we first initialize the block, then execute some stuff (not
 /// in the function), and then finalize the block.
 pub(crate) fn run_to_block(n: BlockNumber) {
-	IpStaking::on_finalize(System::block_number());
-	for b in (System::block_number() + 1)..=n {
-		System::set_block_number(b);
-		// Session::on_initialize(b);
-		<IpStaking as Hooks<BlockNumber>>::on_initialize(b);
-		Timestamp::set_timestamp(System::block_number() as u64 * MILLISECS_PER_BLOCK + INIT_TIMESTAMP);
-		if b != n {
-			IpStaking::on_finalize(System::block_number());
-		}
-	}
+    IpStaking::on_finalize(System::block_number());
+    for b in (System::block_number() + 1)..=n {
+        System::set_block_number(b);
+        // Session::on_initialize(b);
+        <IpStaking as Hooks<BlockNumber>>::on_initialize(b);
+        Timestamp::set_timestamp(
+            System::block_number() as u64 * MILLISECS_PER_BLOCK + INIT_TIMESTAMP,
+        );
+        if b != n {
+            IpStaking::on_finalize(System::block_number());
+        }
+    }
 }
