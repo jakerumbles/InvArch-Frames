@@ -66,7 +66,7 @@ pub mod pallet {
     pub type AccountIdOf<T> = <T as frame_system::Config>::AccountId;
     pub type IpsIdOf<T> = <T as pallet_inv4::Config>::IpId;
     pub type BlockNumberOf<T> = <T as frame_system::Config>::BlockNumber;
-    pub type IpsStakeInfoOf<T> = IpsStakeInfo<BalanceOf<T>, BlockNumberOf<T>>;
+    pub type IpsStakeInfoOf<T> = IpsStakeInfo<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
     pub type Era = u32;
     pub type EraStake<T> = (Option<(Era, BalanceOf<T>)>, Option<(Era, BalanceOf<T>)>);
 
@@ -162,9 +162,12 @@ pub mod pallet {
     pub struct Pallet<T>(_);
 
     /// The number of tokens staked in the system. In other words, the sum of the tokens staked to each IP set, for all IP sets.
+    /// 1st balance: Total system stake during current era
+    /// 2nd balance: New stake during this era to add to 1st balance (total system stake) at beginning of next era
+    /// 3rd balance: New unstake during this era to subtract from 1st balance (total system stake) at beginning of next era
     #[pallet::storage]
     #[pallet::getter(fn total_staked)]
-    pub type TotalStaked<T> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+    pub type TotalStaked<T> = StorageValue<_, (BalanceOf<T>, BalanceOf<T>, BalanceOf<T>), ValueQuery>;
 
     /// Keeps track of the current era. Staking rewards are calculated per era.
     #[pallet::storage]
@@ -182,8 +185,8 @@ pub mod pallet {
     pub type RegisteredIps<T> = StorageMap<_, Blake2_128Concat, IpsIdOf<T>, IpsStakeInfoOf<T>>;
 
     /// Keeps track of which accounts are staking in the IP staking system and what the accounts total stake is across all IP sets they are staked to.
-    /// The 1st half of the tuple is the accounts total stake in the system that the rewards will be calculated from at the beginning of the next era.
-    /// The 2nd half of the tuple is new stake, if any, and will be added to the accounts total stake (1st half of the tuple) after rewards for
+    /// 1st balance of the tuple is the accounts total stake in the system that the rewards will be calculated from at the beginning of the next era.
+    /// 2nd balance of the tuple is new stake, if any, and will be added to the accounts total stake (1st half of the tuple) after rewards for
     /// era x are calculated at the very beginning of era x+1.
     #[pallet::storage]
     #[pallet::getter(fn ips_stakers)]
@@ -211,7 +214,7 @@ pub mod pallet {
     // Set up initial storage values when chain starts up the first time
     #[pallet::genesis_config]
     pub struct GenesisConfig<T: Config> {
-        pub total_staked: BalanceOf<T>,
+        pub total_staked: (BalanceOf<T>, BalanceOf<T>, BalanceOf<T>),
         pub current_era: Era,
         pub last_payout_block: BlockNumberOf<T>,
     }
@@ -220,7 +223,7 @@ pub mod pallet {
     impl<T: Config> Default for GenesisConfig<T> {
         fn default() -> Self {
             Self {
-                total_staked: Default::default(),
+                total_staked: (Default::default(), Default::default(), Default::default()),
                 current_era: Default::default(),
                 last_payout_block: Default::default(),
             }
@@ -303,10 +306,13 @@ pub mod pallet {
             if n != Zero::zero() && (n % blocks_per_era).is_zero() {
                 // Get previous era
                 let prev_era = Self::increment_era();
+                let total_system_stake = Self::total_staked();
 
-                let (ips_era_inflation, staker_era_inflation) = Self::mint_inflation(prev_era);
+                let (ips_era_inflation, staker_era_inflation) = Self::mint_inflation(prev_era, total_system_stake.0);
 
-                Self::calculate_staking_rewards(ips_era_inflation, staker_era_inflation);
+                Self::calculate_ips_rewards(ips_era_inflation, total_system_stake.0);
+                Self::calculate_staker_rewards(staker_era_inflation, total_system_stake.0);
+                Self::update_total_system_stake(total_system_stake);
             }
 
             // to get rid of error for now
@@ -344,7 +350,10 @@ pub mod pallet {
 
             // Register IPS
             let registered_ips: IpsStakeInfoOf<T> = IpsStakeInfo {
-                total_stake: BalanceOf::<T>::from(0u32),
+                address: derived_address,
+                total_stake: Zero::zero(),
+                next_era_new_stake: Zero::zero(),
+                next_era_new_unstake: Zero::zero(),
                 block_registered_at: current_block_number,
             };
 
@@ -469,15 +478,16 @@ pub mod pallet {
 
             // Update IpsStakeInfo struct with correct total_stake
             RegisteredIps::<T>::try_mutate(ips_id, |ips| -> DispatchResult {
-                let mut ips_obj = ips.take().ok_or(Error::<T>::IpsNotRegistered)?;
-                let updated_amount = ips_obj.total_stake.checked_add(&amount).ok_or(Error::<T>::Overflow)?;
-                ips_obj.total_stake = updated_amount;
+                let mut ips_obj = ips.take().ok_or(Error::<T>::IpsNotRegistered)?;      
+                let updated_add = ips_obj.next_era_new_stake.checked_add(&amount).ok_or(Error::<T>::Overflow)?;
+                ips_obj.next_era_new_stake = updated_add;
                 *ips = Some(ips_obj);
                 Ok(())
             })?;
 
-            // Update the total system stake
-            let new_total_system_stake = TotalStaked::<T>::get()
+            // Update the amount of new stake to add to the total system stake at beginning of next era
+            let mut new_total_system_stake = TotalStaked::<T>::get();
+            new_total_system_stake.1 = new_total_system_stake.1
                 .checked_add(&amount)
                 .ok_or(Error::<T>::Overflow)?;
             TotalStaked::<T>::put(new_total_system_stake);
@@ -578,13 +588,12 @@ pub mod pallet {
         }
 
         // Calculate inflation and mint it to the IP staking pallet pot
-        fn mint_inflation(era: Era) -> (BalanceOf<T>, BalanceOf<T>) {
+        fn mint_inflation(era: Era, total_system_stake: BalanceOf<T>) -> (BalanceOf<T>, BalanceOf<T>) {
             // Compute inflation for previous era
-            let total_staked: BalanceOf<T> = Self::total_staked();
             let total_issuance: BalanceOf<T> =
                 <<T as pallet::Config>::Currency as Currency<T::AccountId>>::total_issuance();
             let (to_mint, extra) = <T as Config>::EraPayout::era_payout(
-                total_staked,
+                total_system_stake,
                 total_issuance,
                 <T as Config>::MillisecondsPerEra::get(),
             );
@@ -611,18 +620,62 @@ pub mod pallet {
             (ips_era_inflation, staker_era_inflation)
         }
 
-        fn calculate_staking_rewards(
+        fn calculate_ips_rewards(
             ips_era_inflation: BalanceOf<T>,
-            staker_era_inflation: BalanceOf<T>,
+            total_system_stake: BalanceOf<T>,
         ) -> DispatchResult {
-            // Calculate staking reward for the current era for every AccountId <=> IpsId pair and update their claimable value in RewardsClaimable
-            let ips_stakers_iter = IpsStakers::<T>::iter();
+            // Calculate rewards for registered IP sets and then update IPS total stakes for current era
+            let registered_ips_iter = RegisteredIps::<T>::iter();
+            for (_, (ips_id, ips_stake_info)) in registered_ips_iter.enumerate() {
+                let ips_total_stake = ips_stake_info.total_stake;
+                let account = ips_stake_info.address;
 
+                // Only earn rewards if a non-zero amount of tokens have been staked to this IP Set
+                if ips_total_stake > Zero::zero() {
+                    // IPS percentage of total system stake (TotalStaked)
+                    let ips_percentage = Perbill::from_rational(ips_total_stake, total_system_stake);
+                    
+                    // Actual token rewards that will be added to the IP Set accounts claimable rewards
+                    let era_rewards = ips_percentage * ips_era_inflation;
+
+                    // Update storage
+                    let new_claimable_balance = Self::rewards_claimable(account.clone())
+                        .checked_add(&era_rewards)
+                        .ok_or(Error::<T>::Overflow)?;
+                    RewardsClaimable::<T>::set(account.clone(), new_claimable_balance);
+                }
+
+                // Take note: Rewards must be calculated before new stakes/unstakes are added/subtracted from totals
+
+                // Update IPS total stake
+                RegisteredIps::<T>::try_mutate(ips_id, |ips| -> DispatchResult {
+                    let mut ips_obj = ips.take().ok_or(Error::<T>::IpsNotRegistered)?;
+                    
+                    // Add new stake to total_stake
+                    let updated_stake_add = ips_obj.total_stake.checked_add(&ips_obj.next_era_new_stake).ok_or(Error::<T>::Overflow)?;
+
+                    // Subtract unstake from total_stake
+                    ips_obj.total_stake = updated_stake_add - ips_obj.next_era_new_unstake;
+
+                    // Reset values
+                    ips_obj.next_era_new_stake = Zero::zero();
+                    ips_obj.next_era_new_unstake = Zero::zero();
+
+                    *ips = Some(ips_obj);
+                    Ok(())
+                })?;
+            }
+
+            Ok(())
+        }
+
+        fn calculate_staker_rewards(staker_era_inflation: BalanceOf<T>, total_system_stake: BalanceOf<T>) -> DispatchResult {
             // Calculate rewards for IP stakers and then update account total stakes for current era
+            let ips_stakers_iter = IpsStakers::<T>::iter();
             for (_, (account, (account_total_stake, new_stake))) in ips_stakers_iter.enumerate() {
                 // Calculate accounts claimable rewards and update storage
                 // Accounts percentage of total system stake (TotalStaked)
-                let stakers_percentage = Perbill::from_rational(account_total_stake, Self::total_staked());
+                let stakers_percentage = Perbill::from_rational(account_total_stake, total_system_stake);
                 
                 // Actual token rewards that will be added to the users claimable rewards
                 let era_rewards = stakers_percentage * staker_era_inflation;
@@ -633,15 +686,15 @@ pub mod pallet {
                     .ok_or(Error::<T>::Overflow)?;
                 RewardsClaimable::<T>::set(account.clone(), new_claimable_balance);
 
+                // Take note: Rewards must be calculated before new stakes/unstakes are added/subtracted from totals
+
                 // Set updated total stake for account
                 let updated_total_stake = account_total_stake + new_stake;
                 let zero: BalanceOf<T> = Zero::zero();
                 IpsStakers::<T>::set(account, Some((updated_total_stake, zero)));
             }
 
-            // Calculate rewards for registered IP sets
-
-            // Shift over StakeByEra records
+            // Shift over StakeByEra records for IP Stakers
             let stake_by_era_iter = StakeByEra::<T>::iter_keys();
             for (_, (account, ips_id)) in stake_by_era_iter.enumerate() {
                 StakeByEra::<T>::try_mutate(account, ips_id, |era_stake| -> DispatchResult {
@@ -660,6 +713,13 @@ pub mod pallet {
             }
 
             Ok(())
+        }
+
+        fn update_total_system_stake(total_system_stake: (BalanceOf<T>, BalanceOf<T>, BalanceOf<T>)) {
+            let (old_total_stake, new_stake, new_unstake) = total_system_stake;
+            let new_total_stake = old_total_stake + new_stake - new_unstake;
+            let zero: BalanceOf<T> = Zero::zero();
+            TotalStaked::<T>::put((new_total_stake, zero, zero));
         }
     }
 }

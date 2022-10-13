@@ -22,7 +22,7 @@ fn stake_to_ips() {
         let ips_id = create_ips();
         assert_ok!(register_ips(ips_id));
 
-        assert_eq!(IpStaking::total_staked(), 0);
+        assert_eq!(IpStaking::total_staked(), (0, 0, 0));
 
         // BOB has never staked before
         assert!(IpStaking::ips_stakers(BOB).is_none());
@@ -34,12 +34,19 @@ fn stake_to_ips() {
             1_000_000_000_001
         ));
 
-        assert_eq!(IpStaking::total_staked(), 1_000_000_000_001);
+        // New stake of 1_000_000_000_001 will apply to next era, but current total stake is still 0. 0 unstake as well
+        assert_eq!(IpStaking::total_staked(), (0, 1_000_000_000_001, 0));
 
+        // Account has 0 active stake. 1_000_000_000_001 new stake will be added to active stake at beginning of next era
         assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (0, 1_000_000_000_001));
 
-        let ips_total_stake = IpStaking::registered_ips(ips_id).unwrap().total_stake;
-        assert_eq!(ips_total_stake, 1_000_000_000_001);
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 0);
+        assert_eq!(new_stake, 1_000_000_000_001);
+        assert_eq!(new_unstake, 0);
 
         // Test staking with no history
         let stakers_by_era = IpStaking::stake_by_era(BOB, ips_id);
@@ -60,6 +67,17 @@ fn stake_to_ips() {
 
         assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (0, 2_000_000_000_001));
 
+        // New stake of 1_000_000_000_00 will apply to next era, but current total stake is still 0. 0 unstake as well
+        assert_eq!(IpStaking::total_staked(), (0, 2_000_000_000_001, 0));
+
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 0);
+        assert_eq!(new_stake, 2_000_000_000_001);
+        assert_eq!(new_unstake, 0);
+
         // Runtime is set to 1 era = 1 block for ease of testing
         let mut block_number = frame_system::Pallet::<Test>::block_number();
 
@@ -69,6 +87,17 @@ fn stake_to_ips() {
         assert_eq!(block_number, 2);
 
         // // ---Now in era 1---
+
+        // New stake should be added over to total stake
+        assert_eq!(IpStaking::total_staked(), (2_000_000_000_001, 0, 0));
+
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 2_000_000_000_001);
+        assert_eq!(new_stake, 0);
+        assert_eq!(new_unstake, 0);
 
         let stakers_by_era = IpStaking::stake_by_era(BOB, ips_id);
         // Stake should have been shifted over to first spot in tuple
@@ -85,6 +114,18 @@ fn stake_to_ips() {
             1_000_000_000_000
         ));
 
+        // 1_000_000_000_000 should be added on to new stake
+        assert_eq!(IpStaking::total_staked(), (2_000_000_000_001, 1_000_000_000_000, 0));
+
+        // 1_000_000_000_000 should be added on to new stake
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 2_000_000_000_001);
+        assert_eq!(new_stake, 1_000_000_000_000);
+        assert_eq!(new_unstake, 0);
+
         let stakers_by_era = IpStaking::stake_by_era(BOB, ips_id);
         let expected_tuple3 = Some((Some((1, 2_000_000_000_001)), Some((2, 3_000_000_000_001))));
         assert_eq!(stakers_by_era, expected_tuple3);
@@ -94,7 +135,19 @@ fn stake_to_ips() {
         block_number = frame_system::Pallet::<Test>::block_number();
         assert_eq!(block_number, 12);
 
-        // // ---Now in era 11---
+        // ---Now in era 11---
+
+        // New stake should be added over to total stake
+        assert_eq!(IpStaking::total_staked(), (3_000_000_000_001, 0, 0));
+
+        // New stake should be added over to total stake
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 3_000_000_000_001);
+        assert_eq!(new_stake, 0);
+        assert_eq!(new_unstake, 0);
 
         // Stake should have been shifted over to first spot in tuple
         let stakers_by_era = IpStaking::stake_by_era(BOB, ips_id);
@@ -108,12 +161,21 @@ fn stake_to_ips() {
             2_000_000_000_000
         ));
 
+        // 2_000_000_000_000 should be added on to new stake
+        assert_eq!(IpStaking::total_staked(), (3_000_000_000_001, 2_000_000_000_000, 0));
+
+        // 2_000_000_000_000 should be added on to new stake
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 3_000_000_000_001);
+        assert_eq!(new_stake, 2_000_000_000_000);
+        assert_eq!(new_unstake, 0);
+
         let stakers_by_era = IpStaking::stake_by_era(BOB, ips_id);
         let expected_tuple5 = Some((Some((2, 3_000_000_000_001)), Some((12, 5_000_000_000_001))));
         assert_eq!(stakers_by_era, expected_tuple5);
-
-        let ips_total_stake = IpStaking::registered_ips(ips_id).unwrap().total_stake;
-        assert_eq!(ips_total_stake, 5_000_000_000_001);
 
         // // Assert that the NewStake event is being emitted properly
         System::assert_last_event(
@@ -128,6 +190,7 @@ fn stake_to_ips() {
         // TODO: Add a 2nd staker (ALICE) to this IPS
     });
 }
+
 
 #[test]
 fn staking_below_min_amount_should_fail() {
