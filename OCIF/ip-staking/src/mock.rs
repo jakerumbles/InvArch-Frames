@@ -145,27 +145,28 @@ impl frame_system::Config for Test {
 }
 
 // REWARD_CURVE is used to calculate inflation
-pallet_staking_reward_curve::build! {
-    const REWARD_CURVE: PiecewiseLinear<'static> = curve!(
-        min_inflation: 0_030_000,
-        max_inflation: 0_100_000,
-        ideal_stake: 0_500_000,
-        falloff: 0_050_000,
-        max_piece_count: 100,
-        test_precision: 0_005_000,
-    );
-}
+// pallet_staking_reward_curve::build! {
+//     const REWARD_CURVE: PiecewiseLinear<'static> = curve!(
+//         min_inflation: 099_999, // 9.9999%
+//         max_inflation: 100_000, // 10%
+//         ideal_stake: 0_500_000,
+//         falloff: 0_050_000,
+//         max_piece_count: 100,
+//         test_precision: 0_005_000,
+//     );
+// }
 
 parameter_types! {
     pub const IpsRegisterDeposit: Balance = UNIT;
     pub const OcifIpStakingPalletId: PalletId = PalletId(*b"ia/ipstk");
     pub const MinStakingAmount: Balance = UNIT;
-    pub const RewardCurve: &'static PiecewiseLinear<'static> = &REWARD_CURVE;
+    // pub const RewardCurve: &'static PiecewiseLinear<'static> = &REWARD_CURVE;
     pub const MillisecondsPerEra: u64 = (DAYS as u64) * MILLISECS_PER_BLOCK;
     pub const BlocksPerEra: u32 = 1;
+    pub const BlocksPerYear: u32 = 1 * 365; // BlocksPerEra * 365
     pub const UnbondingPeriod: u32 = 1;
-    pub const MaxStakersPerIps: u32 = 1_000_000;
     pub const MaxUniqueStakes: u8 = 10;
+    pub const IpStakingInflationRate: Perbill = Perbill::from_percent(10);
     pub const IpsInflationPercentage: Perbill = Perbill::from_percent(60);
     pub const StakerInflationPercentage: Perbill = Perbill::from_percent(40);
 }
@@ -175,15 +176,16 @@ impl ip_staking::Config for Test {
     type IpsId = CommonId;
     type Currency = Balances;
     type Balance = Balance;
-    type EraPayout = ConvertCurve<RewardCurve>;
+    // type EraPayout = ConvertCurve<RewardCurve>;
     type PalletId = OcifIpStakingPalletId;
     type IpsRegisterDeposit = IpsRegisterDeposit;
     type MinStakingAmount = MinStakingAmount;
     type MillisecondsPerEra = MillisecondsPerEra;
     type BlocksPerEra = BlocksPerEra;
+    type BlocksPerYear = BlocksPerYear;
     type UnbondingPeriod = UnbondingPeriod;
-    type MaxStakersPerIps = MaxStakersPerIps;
     type MaxUniqueStakes = MaxUniqueStakes;
+    type IpStakingInflationRate = IpStakingInflationRate;
     type IpsInflationPercentage = IpsInflationPercentage;
     type StakerInflationPercentage = StakerInflationPercentage;
 }
@@ -675,16 +677,40 @@ impl ExtBuilder {
         // Give accounts 10 tokens each
         pallet_balances::GenesisConfig::<Test> {
             balances: vec![
-                (1, 10_000_000_000_000),
-                (2, 10_000_000_000_000),
-                (3, 10_000_000_000_000),
-                (4, 10_000_000_000_000),
-                (5, 10_000_000_000_000),
-                (6, 10_000_000_000_000),
+                (1, 3_000_000_000_000),
+                (2, 11_699_993_000_000_000_000),
+                (3, 1_000_000_000_000),
+                (4, 1_000_000_000_000),
+                (5, 1_000_000_000_000),
+                (6, 1_000_000_000_000),
             ],
+            // balances: vec![
+            //     (1, 100_000_000_000_000),
+            //     (2, 500_000_000_000_001),
+            //     (3, 100_000_000_000_000),
+            //     (4, 100_000_000_000_000),
+            //     (5, 100_000_000_000_000),
+            //     (6, 100_000_000_000_000),
+            // ],
         }
         .assimilate_storage(&mut t)
         .unwrap();
+
+        crate::GenesisConfig::<Test> {
+            total_staked: (0, 0, 0),
+            current_era: 0,
+            last_payout_block: 0,
+            inital_inflation_per_era: 3_205_000_000_000_000,
+            last_inflation_recalc_block: 0,
+        }
+        .assimilate_storage(&mut t)
+        .unwrap();
+
+        // pub total_staked: (BalanceOf<T>, BalanceOf<T>, BalanceOf<T>),
+        // pub current_era: Era,
+        // pub last_payout_block: BlockNumberOf<T>,
+        // pub inital_yearly_inflation: BalanceOf<T>,
+        // pub last_inflation_recalc_block: BlockNumberOf<T>,
 
         let mut ext = sp_io::TestExternalities::new(t);
         ext.execute_with(|| System::set_block_number(1));

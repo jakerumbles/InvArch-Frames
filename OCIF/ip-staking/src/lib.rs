@@ -53,12 +53,13 @@ pub mod pallet {
         traits::{
             fungible::{Inspect, Mutate},
             Currency, LockableCurrency, ReservableCurrency,
+            ExistenceRequirement::KeepAlive
         },
         Blake2_128Concat, BoundedBTreeSet, BoundedVec, PalletId,
     };
-    use frame_system::pallet_prelude::*;
+    use frame_system::{pallet_prelude::*, Origin};
     use pallet_staking::EraPayout;
-    use sp_std::vec::Vec;
+
 
     // pub type BalanceOf<T> = <T as pallet::Config>::Balance;
     pub type BalanceOf<T> =
@@ -113,7 +114,7 @@ pub mod pallet {
             >;
 
         /// Provides access to the `era_payout()` function which determines how much should be paid out to stakers per era
-        type EraPayout: EraPayout<<<Self as Config>::Currency as Currency<<Self as frame_system::Config>::AccountId>>::Balance>;
+        // type EraPayout: EraPayout<<<Self as Config>::Currency as Currency<<Self as frame_system::Config>::AccountId>>::Balance>;
 
         /// The IP Staking pallet id, used for deriving its sovereign account ID.
         /// Tokens from inflation will be minted to here before they are claimed by members of the staking system.
@@ -136,17 +137,21 @@ pub mod pallet {
         #[pallet::constant]
         type BlocksPerEra: Get<u32>;
 
+        /// The number of blocks per year.
+        #[pallet::constant]
+        type BlocksPerYear: Get<u32>;
+
         /// The number of eras before an account gets its tokens back after calling unstake
         #[pallet::constant]
         type UnbondingPeriod: Get<Era>;
 
-        /// This is the maximum number of accounts that can stake towards an IP set in any given era
-        #[pallet::constant]
-        type MaxStakersPerIps: Get<u32>;
-
         /// Max # of IP sets that an account can be staked to at once. Prevents state and computation bloat.
         #[pallet::constant]
         type MaxUniqueStakes: Get<u8>;
+
+        /// Inflation rate for the whole IP Staking system
+        #[pallet::constant]
+        type IpStakingInflationRate: Get<Perbill>;
 
         /// The percentage of inflation that is allocated for registered IP sets
         #[pallet::constant]
@@ -188,6 +193,7 @@ pub mod pallet {
     /// 1st balance of the tuple is the accounts total stake in the system that the rewards will be calculated from at the beginning of the next era.
     /// 2nd balance of the tuple is new stake, if any, and will be added to the accounts total stake (1st half of the tuple) after rewards for
     /// era x are calculated at the very beginning of era x+1.
+    /// TODO: Add 3rd field in tuple to keep track of new unstakes
     #[pallet::storage]
     #[pallet::getter(fn ips_stakers)]
     pub type IpsStakers<T: Config> =
@@ -206,10 +212,21 @@ pub mod pallet {
         OptionQuery,
     >;
 
-    /// Keeps track of staking rewards earned by a given account
+    /// Keeps track of staking rewards earned by a given account. Balance is reset to 0 after a user calls claim()
     #[pallet::storage]
     #[pallet::getter(fn rewards_claimable)]
     pub type RewardsClaimable<T> = StorageMap<_, Blake2_128Concat, AccountIdOf<T>, BalanceOf<T>, ValueQuery>;
+
+    /// Balance is the inflation to be minted at the beginning of every era during a year. 
+    /// This balance is recalculated every T::BlocksPerYear blocks
+    #[pallet::storage]
+    #[pallet::getter(fn inflation_per_era)]
+    pub type InflationPerEra<T> = StorageValue<_, BalanceOf<T>, ValueQuery>;
+
+    /// The last block where InflationPerEra was recalculated
+    #[pallet::storage]
+    #[pallet::getter(fn last_inflation_recalc_block)]
+    pub type LastInflationRecalcBlock<T> = StorageValue<_, BlockNumberOf<T>, ValueQuery>;
 
     // Set up initial storage values when chain starts up the first time
     #[pallet::genesis_config]
@@ -217,6 +234,8 @@ pub mod pallet {
         pub total_staked: (BalanceOf<T>, BalanceOf<T>, BalanceOf<T>),
         pub current_era: Era,
         pub last_payout_block: BlockNumberOf<T>,
+        pub inital_inflation_per_era: BalanceOf<T>,
+        pub last_inflation_recalc_block: BlockNumberOf<T>,
     }
 
     #[cfg(feature = "std")]
@@ -226,6 +245,8 @@ pub mod pallet {
                 total_staked: (Default::default(), Default::default(), Default::default()),
                 current_era: Default::default(),
                 last_payout_block: Default::default(),
+                inital_inflation_per_era: Default::default(),
+                last_inflation_recalc_block: Default::default(),
             }
         }
     }
@@ -236,6 +257,9 @@ pub mod pallet {
             <TotalStaked<T>>::put(&self.total_staked);
             <CurrentEra<T>>::put(&self.current_era);
             <LastPayoutBlock<T>>::put(&self.last_payout_block);
+            <InflationPerEra<T>>::put(&self.inital_inflation_per_era);
+            <LastInflationRecalcBlock<T>>::put(frame_system::Pallet::<T>::block_number());
+
             // for (a, b) in &self.account_map {
             // 	<AccountMap<T>>::insert(a, b);
             // }
@@ -259,6 +283,13 @@ pub mod pallet {
             ips_id: IpsIdOf<T>,
             stake_amount: BalanceOf<T>,
         },
+        RewardsClaimed {
+            claimer: AccountIdOf<T>,
+            reward_amount: BalanceOf<T>,
+        },
+        NewDailyInflationRate {
+            amount: BalanceOf<T>,
+        }
     }
 
     // Errors inform users that something went wrong.
@@ -294,6 +325,8 @@ pub mod pallet {
         RecordNotDeleted,
         /// Account is already staked to the max allowed # of IP sets (MaxUniqueStakes)
         MaxStakesAlreadyReached,
+        /// Account tries to claim rewards, but doesn't have any rewards to claim
+        AccountHasNoClaim,
     }
 
     #[pallet::hooks]
@@ -315,8 +348,30 @@ pub mod pallet {
                 Self::update_total_system_stake(total_system_stake);
             }
 
+            // Calculate the inflation per era for the new year (block based, not calendar based)
+            if n - Self::last_inflation_recalc_block() == T::BlocksPerYear::get().into() {
+                let total_supply: BalanceOf<T> = <<T as pallet::Config>::Currency as Currency<T::AccountId>>::total_issuance();
+
+                // Inflation for the next year
+                let one_year_inflation = T::IpStakingInflationRate::get() * total_supply;
+
+                // A single Eras inflation
+                let one_day_inflation = one_year_inflation / T::BlocksPerYear::get().into();
+
+                // Update storage
+                InflationPerEra::<T>::put(one_day_inflation);
+                LastInflationRecalcBlock::<T>::put(n);
+
+                Self::deposit_event(Event::<T>::NewDailyInflationRate {
+                    amount: one_day_inflation,
+                });
+            }
+
             // to get rid of error for now
             // TODO: Add weight
+
+            // TODO: Add check for inflation to make sure it doesn't go higher than supposed to. Talk to Gabe
+
             100
         }
     }
@@ -334,6 +389,8 @@ pub mod pallet {
             // Ensure that `innovator` is the IPS owner. Register can only be called through IPS multisig call
             let derived_address = multi_account_id::<T, T::IpId>(ips_id.clone(), None);
             ensure!(innovator == derived_address, Error::<T>::NoPermission);
+
+            // TODO: Finish checks
 
             // Ensure IPS is top level i.e. a Parentage::Parent variant
             // match ips.unwrap().parentage.clone() {
@@ -506,66 +563,87 @@ pub mod pallet {
         }
 
         /// Unstake a specific amount of tokens from an IPS for a given account
-        // #[pallet::weight(1)]
-        // pub fn unstake_amount(origin: OriginFor<T>, ips_id: T::IpId, amount: BalanceOf<T>) -> DispatchResultWithPostInfo {
-        // 	let staker = ensure_signed(origin)?;
+        #[pallet::weight(1)]
+        pub fn unstake_amount(origin: OriginFor<T>, ips_id: T::IpId, amount: BalanceOf<T>) -> DispatchResultWithPostInfo {
+        	let staker = ensure_signed(origin)?;
 
-        // 	Self::unstake(staker, ips_id, amount)
-        // }
+        	Self::unstake(staker, ips_id, amount)
+        }
 
-        /// Unstake all tokens from an IPS for a given account
-        // #[pallet::weight(1)]
-        // pub fn unstake_all(origin: OriginFor<T>, ips_id: T::IpId) -> DispatchResultWithPostInfo {
-        // 	let staker = ensure_signed(origin)?;
+        // Unstake all tokens from an IPS for a given account
+        #[pallet::weight(1)]
+        pub fn unstake_all(origin: OriginFor<T>, ips_id: T::IpId) -> DispatchResultWithPostInfo {
+        	let staker = ensure_signed(origin)?;
 
-        // 	// Get stakers total stake. If no stake then error
-        // 	let staked_amount = match Self::stake_by_era(ips_id, staker.clone()).pop() {
-        // 		Some(v) => {
-        // 			v.1
-        // 		}
-        // 		// Account has no stake so return 0
-        // 		None => {
-        // 			return Err(Error::<T>::AccountHasNoStake.into());
-        // 		}
-        // 	};
+        	// Get stakers total stake. If no stake then error
+        	let staked_amount = match Self::stake_by_era(ips_id, staker.clone()).pop() {
+        		Some(v) => {
+        			v.1
+        		}
+        		// Account has no stake so return 0
+        		None => {
+        			return Err(Error::<T>::AccountHasNoStake.into());
+        		}
+        	};
 
-        // 	Self::unstake(staker, ips_id, staked_amount)
-        // }
+        	Self::unstake(staker, ips_id, staked_amount)
+        }
 
         /// Claim tokens earned from IP staking
         #[pallet::weight(1)]
         pub fn claim(origin: OriginFor<T>) -> DispatchResultWithPostInfo {
             let claimer = ensure_signed(origin)?;
 
+            let reward_amount = Self::rewards_claimable(claimer.clone());
+
+            if reward_amount > Zero::zero() {
+                RewardsClaimable::<T>::try_mutate(claimer.clone(), |reward| -> DispatchResult {
+                    let claimed_reward = *reward;
+                    *reward = Zero::zero();
+
+                    <T as Config>::Currency::transfer(&Self::account_id(), &claimer.clone(), claimed_reward, KeepAlive)?;
+
+                    Ok(())
+                })?;
+            }
+            else {
+                return Err(Error::<T>::AccountHasNoClaim.into());
+            }
+
+            Self::deposit_event(Event::<T>::RewardsClaimed{
+                claimer,
+                reward_amount,
+            });
+
             Ok(().into())
         }
     }
 
     impl<T: Config> Pallet<T> {
-        // pub fn unstake(staker: AccountIdOf<T>, ips_id: T::IpId, unstake_amount: BalanceOf<T>) -> DispatchResultWithPostInfo {
-        // 	// Ensure IPS is registered for staking
-        // 	ensure!(Self::registered_ips(ips_id).is_some(), Error::<T>::IpsNotRegistered);
+        pub fn unstake(staker: AccountIdOf<T>, ips_id: T::IpId, unstake_amount: BalanceOf<T>) -> DispatchResultWithPostInfo {
+        	// Ensure IPS is registered for staking
+        	ensure!(Self::registered_ips(ips_id).is_some(), Error::<T>::IpsNotRegistered);
 
-        // 	// Ensure `unstake_amount` is at least `MinStakingAmount`
-        // 	ensure!(unstake_amount >= <T as Config>::MinStakingAmount::get(), Error::<T>::BelowMinUnstakingAmount);
+        	// Ensure `unstake_amount` is at least `MinStakingAmount`
+        	ensure!(unstake_amount >= <T as Config>::MinStakingAmount::get(), Error::<T>::BelowMinUnstakingAmount);
 
-        // 	// Ensure account has enough tokens staked on given IPS to unstake that much
-        // 	let staked_amount = match Self::stake_by_era(ips_id, staker.clone()).pop() {
-        // 		Some(v) => {
-        // 			v.1
-        // 		}
-        // 		// Account has no stake so return 0
-        // 		None => {
-        // 			return Err(Error::<T>::AccountHasNoStake.into());
-        // 		}
-        // 	};
-        // 	ensure!(unstake_amount <= staked_amount, Error::<T>::ValueGreaterThanStakedAmount);
+        	// Ensure account has enough tokens staked on given IPS to unstake that much
+        	let staked_amount = match Self::stake_by_era(ips_id, staker.clone()).pop() {
+        		Some(v) => {
+        			v.1
+        		}
+        		// Account has no stake so return 0
+        		None => {
+        			return Err(Error::<T>::AccountHasNoStake.into());
+        		}
+        	};
+        	ensure!(unstake_amount <= staked_amount, Error::<T>::ValueGreaterThanStakedAmount);
 
-        // 	// Ensure staking amount stays in valid range
-        // 	ensure!(staked_amount - unstake_amount >= <T as Config>::MinStakingAmount::get() || staked_amount - unstake_amount == Zero::zero(), Error::<T>::StakingAmountTooLow);
+        	// Ensure staking amount stays in valid range
+        	ensure!(staked_amount - unstake_amount >= <T as Config>::MinStakingAmount::get() || staked_amount - unstake_amount == Zero::zero(), Error::<T>::StakingAmountTooLow);
 
-        // 	Ok(().into())
-        // }
+        	Ok(().into())
+        }
 
         /// Return the current era #, and then increment it by 1
         fn increment_era() -> Era {
@@ -590,14 +668,17 @@ pub mod pallet {
         // Calculate inflation and mint it to the IP staking pallet pot
         fn mint_inflation(era: Era, total_system_stake: BalanceOf<T>) -> (BalanceOf<T>, BalanceOf<T>) {
             // Compute inflation for previous era
-            let total_issuance: BalanceOf<T> =
-                <<T as pallet::Config>::Currency as Currency<T::AccountId>>::total_issuance();
-            let (to_mint, extra) = <T as Config>::EraPayout::era_payout(
-                total_system_stake,
-                total_issuance,
-                <T as Config>::MillisecondsPerEra::get(),
-            );
-            let total = to_mint + extra;
+            
+            
+            // ---Old method with variable inflation---
+            // let (to_mint, extra) = <T as Config>::EraPayout::era_payout(
+            //     total_system_stake,
+            //     total_issuance,
+            //     <T as Config>::MillisecondsPerEra::get(),
+            // );
+            // let total = to_mint + extra;
+
+            let total = Self::inflation_per_era();
 
             // Mint tokens (inflation) to inflation pot
             let inflation_pot: T::AccountId = Self::account_id();
@@ -613,7 +694,7 @@ pub mod pallet {
             let current_block_number = frame_system::Pallet::<T>::block_number();
             LastPayoutBlock::<T>::put(current_block_number);
 
-            // let ips_era_inflation = total * T::IpsInflationPercentage::get();
+            // Calculate token inflation breakdown for IP sets and IP stakers
             let ips_era_inflation = T::IpsInflationPercentage::get() * total;
             let staker_era_inflation = T::StakerInflationPercentage::get() * total;
 

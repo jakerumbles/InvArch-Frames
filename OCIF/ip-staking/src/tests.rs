@@ -1,7 +1,8 @@
 use crate::{mock::*, Error};
 // use alloc::vec;
 use crate::pallet::Call as IpStakingCall;
-use frame_support::{assert_noop, assert_ok};
+use frame_support::{assert_noop, assert_ok, PalletId};
+use sp_runtime::traits::AccountIdConversion;
 use inv4::AnyIdOf;
 // use frame_system::Origin;
 use primitives::*;
@@ -237,6 +238,120 @@ fn unstaking_below_min_amount_should_fail() {
         // assert_noop!(IpStaking::unstake_amount(Origin::signed(BOB), ips_id, 999_999_999_999), Error::<Test>::BelowMinUnstakingAmount);
     });
 }
+
+#[test]
+fn claiming() {
+    ExtBuilder::default().build().execute_with(|| {
+        let ips_id = create_ips();
+        assert_ok!(register_ips(ips_id));
+
+        // Inital supply should be 11.7 million tokens
+        assert_eq!(Balances::total_issuance(), 11_700_000_000_000_000_000); 
+
+        // BOB stakes 500
+        assert_ok!(IpStaking::stake(
+            Origin::signed(BOB),
+            ips_id,
+            500_000_000_000_000
+        ));
+
+        // ALICE stakes 2
+        assert_ok!(IpStaking::stake(
+            Origin::signed(ALICE),
+            ips_id,
+            2_000_000_000_000
+        ));
+
+        let bob_remaining_balance = Balances::free_balance(&BOB);
+        assert_eq!(bob_remaining_balance,  11_699_493_000_000_000_000);
+
+        run_to_block(3);
+
+        // ---Now in Era 2 where rewards for Era 1 were just computed---
+
+        // Claim reward tokens from staking for an entire year
+        assert_ok!(IpStaking::claim(Origin::signed(BOB)));
+
+        System::assert_last_event(
+            crate::Event::RewardsClaimed {
+                claimer: BOB,
+                reward_amount:  1_596_115_537_848_610,
+            }
+            .into(),
+        );
+
+        let bob_new_balance = Balances::free_balance(&BOB);
+        let bob_staking_reward = bob_new_balance - bob_remaining_balance;
+
+        // assert_eq!(bob_staking_reward, 0);
+
+        assert_eq!(Balances::total_issuance(), 1105382683747058);
+    });
+}
+
+#[test]
+fn inflation_recalculated() {
+    ExtBuilder::default().build().execute_with(|| {
+        assert_eq!(IpStaking::inflation_per_era(), 3_205_000_000_000_000);
+
+        run_to_block(365);
+
+        assert_eq!(IpStaking::inflation_per_era(), 3_526_027_397_260_270);
+       
+    });
+}
+
+#[test]
+fn inflation_minting_correctly() {
+    ExtBuilder::default().build().execute_with(|| {
+        let inflation_acc = PalletId(*b"ia/ipstk").into_account_truncating();
+        assert_eq!(Balances::free_balance(&inflation_acc), 0);
+
+        run_to_block(2);
+        assert_eq!(Balances::free_balance(&inflation_acc), 3_205_000_000_000_000);
+
+        run_to_block(3);
+        assert_eq!(Balances::free_balance(&inflation_acc), 6_410_000_000_000_000);
+    });
+}
+
+
+// #[test]
+// fn claiming_should_fail() {
+//     ExtBuilder::default().build().execute_with(|| {
+//         let ips_id = create_ips();
+//         assert_ok!(register_ips(ips_id));
+
+//         assert_noop!(IpStaking::claim(Origin::signed(BOB)), Error::<Test>::AccountHasNoClaim);
+
+//         // Stake to IP set
+//         assert_ok!(IpStaking::stake(
+//             Origin::signed(BOB),
+//             ips_id,
+//             500_000_000_000_000
+//         ));
+
+//         assert_noop!(IpStaking::claim(Origin::signed(BOB)), Error::<Test>::AccountHasNoClaim);
+
+//         run_to_block(2);
+
+//         IpStaking::claim(Origin::signed(BOB));
+
+//         System::assert_last_event(
+//             crate::Event::RewardsClaimed {
+//                 claimer: BOB,
+//                 reward_amount: 0,
+//             }
+//             .into(),
+//         );
+//         // assert_noop!(IpStaking::claim(Origin::signed(BOB)), Error::<Test>::AccountHasNoClaim);
+
+//         run_to_block(3);
+
+//         assert_ok!(IpStaking::claim(Origin::signed(BOB)));
+//     });
+// }
+
 
 fn create_ips() -> u32 {
     let ips_id = INV4::next_ips_id();
