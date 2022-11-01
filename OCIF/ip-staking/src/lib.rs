@@ -53,7 +53,7 @@ pub mod pallet {
         traits::{
             fungible::{Inspect, Mutate},
             Currency, LockableCurrency, ReservableCurrency,
-            ExistenceRequirement::KeepAlive
+            ExistenceRequirement::AllowDeath
         },
         Blake2_128Concat, BoundedBTreeSet, BoundedVec, PalletId,
     };
@@ -69,7 +69,11 @@ pub mod pallet {
     pub type BlockNumberOf<T> = <T as frame_system::Config>::BlockNumber;
     pub type IpsStakeInfoOf<T> = IpsStakeInfo<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
     pub type Era = u32;
-    pub type EraStake<T> = (Option<(Era, BalanceOf<T>)>, Option<(Era, BalanceOf<T>)>);
+
+    // Index 1: Current era active stake
+    // Index 2: New stake to be added next era
+    // Index 3: New unstake to be subtracted next era
+    pub type EraStake<T> = (Option<(Era, BalanceOf<T>)>, Option<BalanceOf<T>>, Option<BalanceOf<T>>);
 
     use pallet_inv4::{self as inv4};
 
@@ -130,8 +134,8 @@ pub mod pallet {
         type MinStakingAmount: Get<BalanceOf<Self>>;
 
         /// Used for the EraPayout::era_payout() function which determines the # of tokens to mint per era (inflation)
-        #[pallet::constant]
-        type MillisecondsPerEra: Get<u64>;
+        // #[pallet::constant]
+        // type MillisecondsPerEra: Get<u64>;
 
         /// The number of blocks per era. The lower the #, the more chain storage and computation will increase per a given time period
         #[pallet::constant]
@@ -193,11 +197,11 @@ pub mod pallet {
     /// 1st balance of the tuple is the accounts total stake in the system that the rewards will be calculated from at the beginning of the next era.
     /// 2nd balance of the tuple is new stake, if any, and will be added to the accounts total stake (1st half of the tuple) after rewards for
     /// era x are calculated at the very beginning of era x+1.
-    /// TODO: Add 3rd field in tuple to keep track of new unstakes
+    /// 3rd balance: Keep track of new unstakes similar to new stake
     #[pallet::storage]
     #[pallet::getter(fn ips_stakers)]
     pub type IpsStakers<T: Config> =
-        StorageMap<_, Blake2_128Concat, AccountIdOf<T>, (BalanceOf<T>, BalanceOf<T>), OptionQuery>;
+        StorageMap<_, Blake2_128Concat, AccountIdOf<T>, (BalanceOf<T>, BalanceOf<T>, BalanceOf<T>), OptionQuery>;
 
     /// Keeps track of how much, if any, a given account is staking towards a given IP set, per era
     #[pallet::storage]
@@ -283,6 +287,11 @@ pub mod pallet {
             ips_id: IpsIdOf<T>,
             stake_amount: BalanceOf<T>,
         },
+        Unstake {
+            staker: AccountIdOf<T>,
+            ips_id: IpsIdOf<T>,
+            unstake_amount: BalanceOf<T>,
+        },
         RewardsClaimed {
             claimer: AccountIdOf<T>,
             reward_amount: BalanceOf<T>,
@@ -314,7 +323,7 @@ pub mod pallet {
         /// Calling account does not have enough free balance
         NotEnoughFreeBalance,
         /// Account has less tokens staked than it is trying to unstake
-        ValueGreaterThanStakedAmount,
+        UnstakeValueGreaterThanStakedAmount,
         /// Account has no stake on this IP set or any IP set
         AccountHasNoStake,
         /// Cannot unstake less than `MinStakingAmount`
@@ -390,7 +399,7 @@ pub mod pallet {
             let derived_address = multi_account_id::<T, T::IpId>(ips_id.clone(), None);
             ensure!(innovator == derived_address, Error::<T>::NoPermission);
 
-            // TODO: Finish checks
+            // TODO: Finish checks. Gabe said parentage check is not needed
 
             // Ensure IPS is top level i.e. a Parentage::Parent variant
             // match ips.unwrap().parentage.clone() {
@@ -414,6 +423,8 @@ pub mod pallet {
                 block_registered_at: current_block_number,
             };
 
+            // TODO: Add the register deposit
+
             // Update storage
             RegisteredIps::<T>::insert(ips_id, registered_ips);
 
@@ -435,7 +446,7 @@ pub mod pallet {
         pub fn stake(
             origin: OriginFor<T>,
             ips_id: T::IpId,
-            amount: BalanceOf<T>,
+            stake_amount: BalanceOf<T>,
         ) -> DispatchResultWithPostInfo {
             let staker = ensure_signed(origin)?;
 
@@ -445,14 +456,14 @@ pub mod pallet {
                 Error::<T>::IpsNotRegistered
             );
 
-            // Ensure account has enough funds to stake this amount
+            // Ensure account has enough funds to stake this stake_amount
             let free_balance =
                 <<T as pallet::Config>::Currency as Currency<T::AccountId>>::free_balance(&staker);
-            ensure!(free_balance > amount, Error::<T>::NotEnoughFreeBalance);
+            ensure!(free_balance > stake_amount, Error::<T>::NotEnoughFreeBalance);
 
             // Ensure account is staking above set minimum
             ensure!(
-                amount >= <T as Config>::MinStakingAmount::get(),
+                stake_amount >= <T as Config>::MinStakingAmount::get(),
                 Error::<T>::BelowMinStakingAmount
             );
 
@@ -479,39 +490,29 @@ pub mod pallet {
             // Update staking info
             StakeByEra::<T>::try_mutate(staker.clone(), ips_id, |era_stake| -> DispatchResult {
                 match era_stake.take() {
-                    // Account has staked to this IPS before
+                    // Account has stake on this IPS
                     Some(tuple) => {
                         let current_era_stake = tuple.0;
                         let next_era_stake = tuple.1;
+                        let next_era_unstake = tuple.2;
 
                         match next_era_stake {
                             // Account has already called stake during `current_era`. Update stake amount for next era
-                            Some(v) => {
-                                let updated_next_era_stake = (v.0, v.1 + amount);
+                            Some(existing_new_stake) => {
+                                let updated_next_era_stake = existing_new_stake + stake_amount;
                                 *era_stake =
-                                    Some((current_era_stake, Some(updated_next_era_stake)));
+                                    Some((current_era_stake, Some(updated_next_era_stake), next_era_unstake));
                             }
                             // Account has not called stake during `current_era`
                             None => {
-                                match current_era_stake {
-                                    // Account has existing stake from current or previous era
-                                    Some(x) => {
-                                        let new_next_era_stake = (current_era + 1, x.1 + amount);
-                                        *era_stake =
-                                            Some((current_era_stake, Some(new_next_era_stake)));
-                                    }
-                                    // Shouldn't happen
-                                    None => {
-                                        return Err(Error::<T>::RecordNotDeleted.into());
-                                    }
-                                }
+                                *era_stake =
+                                    Some((current_era_stake, Some(stake_amount), next_era_unstake));
                             }
                         }
                     }
-                    // Account has never staked to this IPS before
+                    // Account has no stake on this IPS
                     None => {
-                        let new_stake = (current_era + 1, amount);
-                        *era_stake = Some((None, Some(new_stake)));
+                        *era_stake = Some((None, Some(stake_amount), None));
                     }
                 }
 
@@ -523,20 +524,20 @@ pub mod pallet {
                 IpsStakers::<T>::try_mutate(staker.clone(), |total_stake| -> DispatchResult {
                     let mut updated_stake =
                         total_stake.take().ok_or(Error::<T>::AccountHasNoStake)?;
-                    updated_stake.1 = updated_stake.1 + amount;
-                    // let updated_stake = old_stake.checked_add(&amount).ok_or(Error::<T>::Overflow)?;
+                    updated_stake.1 = updated_stake.1 + stake_amount;
+                    // let updated_stake = old_stake.checked_add(&stake_amount).ok_or(Error::<T>::Overflow)?;
                     *total_stake = Some(updated_stake);
                     Ok(())
                 })?;
             } else {
                 let zero: BalanceOf<T> = Zero::zero();
-                IpsStakers::<T>::insert(staker.clone(), (zero, amount)); //.ok_or(Error::<T>::FailedAddingStaker)?;
+                IpsStakers::<T>::insert(staker.clone(), (zero, stake_amount, zero)); //.ok_or(Error::<T>::FailedAddingStaker)?;
             }
 
             // Update IpsStakeInfo struct with correct total_stake
             RegisteredIps::<T>::try_mutate(ips_id, |ips| -> DispatchResult {
                 let mut ips_obj = ips.take().ok_or(Error::<T>::IpsNotRegistered)?;      
-                let updated_add = ips_obj.next_era_new_stake.checked_add(&amount).ok_or(Error::<T>::Overflow)?;
+                let updated_add = ips_obj.next_era_new_stake.checked_add(&stake_amount).ok_or(Error::<T>::Overflow)?;
                 ips_obj.next_era_new_stake = updated_add;
                 *ips = Some(ips_obj);
                 Ok(())
@@ -545,18 +546,18 @@ pub mod pallet {
             // Update the amount of new stake to add to the total system stake at beginning of next era
             let mut new_total_system_stake = TotalStaked::<T>::get();
             new_total_system_stake.1 = new_total_system_stake.1
-                .checked_add(&amount)
+                .checked_add(&stake_amount)
                 .ok_or(Error::<T>::Overflow)?;
             TotalStaked::<T>::put(new_total_system_stake);
 
             // TODO: Change to lock instead of reserve
             // Reserve accounts tokens they are staking
-            <T as Config>::Currency::reserve(&staker, amount)?;
+            <T as Config>::Currency::reserve(&staker, stake_amount)?;
 
             Self::deposit_event(Event::<T>::NewStake {
                 staker: staker,
                 ips_id: ips_id,
-                stake_amount: amount,
+                stake_amount: stake_amount,
             });
 
             Ok(().into())
@@ -576,9 +577,18 @@ pub mod pallet {
         	let staker = ensure_signed(origin)?;
 
         	// Get stakers total stake. If no stake then error
-        	let staked_amount = match Self::stake_by_era(ips_id, staker.clone()).pop() {
-        		Some(v) => {
-        			v.1
+        	let staked_amount = match Self::stake_by_era(staker.clone(), ips_id) {
+        		Some(era_stake) => {
+                    match era_stake.0 {
+                        Some(active_stake_tuple) => {
+                            // Return accounts current stake
+                            active_stake_tuple.1
+                        }
+                        // Shouldn't happen
+                        None => {
+                            return Err(Error::<T>::AccountHasNoStake.into());
+                        }
+                    }
         		}
         		// Account has no stake so return 0
         		None => {
@@ -601,7 +611,7 @@ pub mod pallet {
                     let claimed_reward = *reward;
                     *reward = Zero::zero();
 
-                    <T as Config>::Currency::transfer(&Self::account_id(), &claimer.clone(), claimed_reward, KeepAlive)?;
+                    <T as Config>::Currency::transfer(&Self::account_id(), &claimer.clone(), claimed_reward, AllowDeath)?;
 
                     Ok(())
                 })?;
@@ -628,19 +638,100 @@ pub mod pallet {
         	ensure!(unstake_amount >= <T as Config>::MinStakingAmount::get(), Error::<T>::BelowMinUnstakingAmount);
 
         	// Ensure account has enough tokens staked on given IPS to unstake that much
-        	let staked_amount = match Self::stake_by_era(ips_id, staker.clone()).pop() {
-        		Some(v) => {
-        			v.1
+        	let staked_amount = match Self::stake_by_era(staker.clone(), ips_id) {
+        		Some(era_stake) => {
+                    match era_stake.0 {
+                        Some(active_stake_tuple) => {
+                            // Return accounts current stake
+                            active_stake_tuple.1
+                        }
+                        // Shouldn't happen
+                        None => {
+                            return Err(Error::<T>::AccountHasNoStake.into());
+                        }
+                    }
         		}
         		// Account has no stake so return 0
         		None => {
         			return Err(Error::<T>::AccountHasNoStake.into());
         		}
         	};
-        	ensure!(unstake_amount <= staked_amount, Error::<T>::ValueGreaterThanStakedAmount);
+        	ensure!(unstake_amount <= staked_amount, Error::<T>::UnstakeValueGreaterThanStakedAmount);
 
-        	// Ensure staking amount stays in valid range
+        	// Ensure staking amount stays in valid range. Must either be above MinStakingAmount or be 0
         	ensure!(staked_amount - unstake_amount >= <T as Config>::MinStakingAmount::get() || staked_amount - unstake_amount == Zero::zero(), Error::<T>::StakingAmountTooLow);
+
+
+
+
+            let current_era = Self::current_era();
+
+            // Update staking info
+            StakeByEra::<T>::try_mutate(staker.clone(), ips_id, |era_stake| -> DispatchResult {
+                match era_stake.take() {
+                    // Account has stake on this IPS
+                    Some(tuple) => {
+                        let current_era_stake = tuple.0;
+                        let next_era_stake = tuple.1;
+                        let next_era_unstake = tuple.2;
+
+                        match next_era_unstake {
+                            // Account has already called unstake during `current_era`. Update unstake amount for next era
+                            Some(existing_new_unstake) => {
+                                let updated_next_era_unstake = existing_new_unstake + unstake_amount;
+                                *era_stake =
+                                    Some((current_era_stake, next_era_stake, Some(updated_next_era_unstake)));
+                            }
+                            // Account has not called unstake during `current_era`
+                            None => {
+                                *era_stake = Some((current_era_stake, next_era_stake, Some(unstake_amount)));
+                            }
+                        }
+                    }
+                    // Account has never staked to this IPS before
+                    None => {
+                        return Err(Error::<T>::AccountHasNoStake.into());
+                    }
+                }
+
+                Ok(())
+            })?;
+
+            // Update accounts total system stake
+            IpsStakers::<T>::try_mutate(staker.clone(), |total_stake| -> DispatchResult {
+                let mut updated_stake =
+                    total_stake.take().ok_or(Error::<T>::AccountHasNoStake)?;
+                updated_stake.2 = updated_stake.2 + unstake_amount;
+                // let updated_stake = old_stake.checked_add(&stake_amount).ok_or(Error::<T>::Overflow)?;
+                *total_stake = Some(updated_stake);
+                Ok(())
+            })?;
+
+            // Update IpsStakeInfo struct with correct total_stake
+            RegisteredIps::<T>::try_mutate(ips_id, |ips| -> DispatchResult {
+                let mut ips_obj = ips.take().ok_or(Error::<T>::IpsNotRegistered)?;      
+                let updated_add = ips_obj.next_era_new_unstake.checked_add(&unstake_amount).ok_or(Error::<T>::Overflow)?;
+                ips_obj.next_era_new_unstake = updated_add;
+                *ips = Some(ips_obj);
+                Ok(())
+            })?;
+
+            // Update the amount of new stake to add to the total system stake at beginning of next era
+            let mut new_total_system_stake = TotalStaked::<T>::get();
+            new_total_system_stake.2 = new_total_system_stake.2
+                .checked_add(&unstake_amount)
+                .ok_or(Error::<T>::Overflow)?;
+            TotalStaked::<T>::put(new_total_system_stake);
+
+            // TODO: Change to lock instead of reserve
+            // Reserve accounts tokens they are staking
+            // <T as Config>::Currency::reserve(&staker, stake_amount)?;
+
+            Self::deposit_event(Event::<T>::Unstake {
+                staker: staker,
+                ips_id: ips_id,
+                unstake_amount: unstake_amount,
+            });
 
         	Ok(().into())
         }
@@ -726,7 +817,7 @@ pub mod pallet {
                     RewardsClaimable::<T>::set(account.clone(), new_claimable_balance);
                 }
 
-                // Take note: Rewards must be calculated before new stakes/unstakes are added/subtracted from totals
+                // ---- TAKE NOTE: REWARDS MUST BE CALCULATED BEFORE NEW STAKES/UNSTAKES ARE ADDED/SUBTRACTED FROM TOTALS ----
 
                 // Update IPS total stake
                 RegisteredIps::<T>::try_mutate(ips_id, |ips| -> DispatchResult {
@@ -753,7 +844,7 @@ pub mod pallet {
         fn calculate_staker_rewards(staker_era_inflation: BalanceOf<T>, total_system_stake: BalanceOf<T>) -> DispatchResult {
             // Calculate rewards for IP stakers and then update account total stakes for current era
             let ips_stakers_iter = IpsStakers::<T>::iter();
-            for (_, (account, (account_total_stake, new_stake))) in ips_stakers_iter.enumerate() {
+            for (_, (account, (account_total_stake, new_stake, new_unstake))) in ips_stakers_iter.enumerate() {
                 // Calculate accounts claimable rewards and update storage
                 // Accounts percentage of total system stake (TotalStaked)
                 let stakers_percentage = Perbill::from_rational(account_total_stake, total_system_stake);
@@ -767,28 +858,50 @@ pub mod pallet {
                     .ok_or(Error::<T>::Overflow)?;
                 RewardsClaimable::<T>::set(account.clone(), new_claimable_balance);
 
-                // Take note: Rewards must be calculated before new stakes/unstakes are added/subtracted from totals
+                // ---- TAKE NOTE: REWARDS MUST BE CALCULATED BEFORE NEW STAKES/UNSTAKES ARE ADDED/SUBTRACTED FROM TOTALS ----
 
                 // Set updated total stake for account
-                let updated_total_stake = account_total_stake + new_stake;
+                let updated_total_stake = account_total_stake + new_stake - new_unstake;
                 let zero: BalanceOf<T> = Zero::zero();
-                IpsStakers::<T>::set(account, Some((updated_total_stake, zero)));
+                IpsStakers::<T>::set(account, Some((updated_total_stake, zero, zero)));
             }
 
-            // Shift over StakeByEra records for IP Stakers
+            // Update StakeByEra records for IP Stakers
+            let era = Self::current_era();
             let stake_by_era_iter = StakeByEra::<T>::iter_keys();
             for (_, (account, ips_id)) in stake_by_era_iter.enumerate() {
                 StakeByEra::<T>::try_mutate(account, ips_id, |era_stake| -> DispatchResult {
-                    let old_era_stake = era_stake.take().ok_or(Error::<T>::AccountHasNoStake)?;
+                    // let old_era_stake = era_stake.take().ok_or(Error::<T>::AccountHasNoStake)?;
 
-                    // Only shift over if the account staked last era
-                    if old_era_stake.1.is_some() {
-                        let current_era_stake = (old_era_stake.1, None);
-                        *era_stake = Some(current_era_stake);
-                    } else {
-                        *era_stake = Some(old_era_stake);
-                    }
+                    if let Some(old_era_stake) = era_stake.take() {
+                        if old_era_stake.1.is_some() || old_era_stake.2.is_some() {
+                            let mut old_active_stake = Zero::zero();
+                            let mut new_stake = Zero::zero();
+                            let mut new_unstake = Zero::zero();
 
+                            if let Some(tuple) = old_era_stake.0 {
+                                old_active_stake = tuple.1;
+                            };
+
+                            if let Some(stake_amount) = old_era_stake.1 {
+                                new_stake = stake_amount;
+                            };
+
+                            if let Some(unstake_amount) = old_era_stake.2 {
+                                new_unstake = unstake_amount;
+                            };
+
+                            let new_stake_amount = old_active_stake + new_stake - new_unstake;
+                            let new_active_stake = Some((era, new_stake_amount));
+                            let new_era_stake: EraStake<T> = (new_active_stake, None, None);
+                            *era_stake = Some(new_era_stake);
+                        }
+                        else {
+                            *era_stake = Some(old_era_stake);
+                        }
+                    };
+                    // pub type EraStake<T> = (Option<(Era, BalanceOf<T>)>, Option<BalanceOf<T>>, Option<BalanceOf<T>>);
+                    
                     Ok(())
                 })?;
             }

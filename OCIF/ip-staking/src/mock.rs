@@ -180,7 +180,7 @@ impl ip_staking::Config for Test {
     type PalletId = OcifIpStakingPalletId;
     type IpsRegisterDeposit = IpsRegisterDeposit;
     type MinStakingAmount = MinStakingAmount;
-    type MillisecondsPerEra = MillisecondsPerEra;
+    // type MillisecondsPerEra = MillisecondsPerEra;
     type BlocksPerEra = BlocksPerEra;
     type BlocksPerYear = BlocksPerYear;
     type UnbondingPeriod = UnbondingPeriod;
