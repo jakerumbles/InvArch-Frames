@@ -44,7 +44,7 @@ mod benchmarking;
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
-    use core::iter::Sum;
+    use core::{iter::Sum, ops::Sub};
     use frame_support::{
         dispatch::{DispatchErrorWithPostInfo, DispatchResultWithPostInfo},
         pallet_prelude::{
@@ -53,7 +53,9 @@ pub mod pallet {
         traits::{
             fungible::{Inspect, Mutate},
             Currency, LockableCurrency, ReservableCurrency,
-            ExistenceRequirement::AllowDeath
+            ExistenceRequirement::AllowDeath,
+            LockIdentifier,
+            WithdrawReasons,
         },
         Blake2_128Concat, BoundedBTreeSet, BoundedVec, PalletId,
     };
@@ -74,6 +76,9 @@ pub mod pallet {
     // Index 2: New stake to be added next era
     // Index 3: New unstake to be subtracted next era
     pub type EraStake<T> = (Option<(Era, BalanceOf<T>)>, Option<BalanceOf<T>>, Option<BalanceOf<T>>);
+
+    const IPS_LOCK_ID: LockIdentifier = *b"ipstklok";
+    const STAKER_LOCK_ID: LockIdentifier = *b"stakelok";
 
     use pallet_inv4::{self as inv4};
 
@@ -100,22 +105,6 @@ pub mod pallet {
             + Mutate<Self::AccountId>
             + frame_support::traits::fungible::Inspect<Self::AccountId>;
 
-        type Balance: Member
-            + Parameter
-            + AtLeast32BitUnsigned
-            + Default
-            + Copy
-            + MaybeSerializeDeserialize
-            + MaxEncodedLen
-            + TypeInfo
-            + Sum<<Self as pallet::Config>::Balance>
-            + IsType<<Self as pallet_balances::Config>::Balance>
-            + From<u128>
-            + From<
-                <<Self as pallet::Config>::Currency as Currency<
-                    <Self as frame_system::Config>::AccountId,
-                >>::Balance,
-            >;
 
         /// Provides access to the `era_payout()` function which determines how much should be paid out to stakers per era
         // type EraPayout: EraPayout<<<Self as Config>::Currency as Currency<<Self as frame_system::Config>::AccountId>>::Balance>;
@@ -127,7 +116,7 @@ pub mod pallet {
 
         /// To deter the waste of chain storage, require a reasonable deposit to register an IPS
         #[pallet::constant]
-        type IpsRegisterDeposit: Get<<Self as pallet::Config>::Balance>;
+        type IpsRegisterDeposit: Get<BalanceOf<Self>>;
 
         /// To deter the waste of chain storage, set a reasonable minimum staking amount
         #[pallet::constant]
@@ -149,9 +138,16 @@ pub mod pallet {
         #[pallet::constant]
         type UnbondingPeriod: Get<Era>;
 
+        /// An IP set must have this much stake on it to be in the active set for the era. IP sets in the active set are the only IP sets that earn rewards
+        #[pallet::constant]
+        type ActiveSetMinStake: Get<BalanceOf<Self>>;
+
         /// Max # of IP sets that an account can be staked to at once. Prevents state and computation bloat.
         #[pallet::constant]
         type MaxUniqueStakes: Get<u8>;
+
+        #[pallet::constant]
+        type MaxUnstakesPerEra: Get<u32>;
 
         /// Inflation rate for the whole IP Staking system
         #[pallet::constant]
@@ -231,6 +227,10 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn last_inflation_recalc_block)]
     pub type LastInflationRecalcBlock<T> = StorageValue<_, BlockNumberOf<T>, ValueQuery>;
+
+    #[pallet::storage]
+    #[pallet::getter(fn unstake_queue)]
+    pub type UnstakeQueue<T> = StorageMap<_, Blake2_128Concat, Era, BoundedVec<AccountIdOf<T>, <T as Config>::MaxUnstakesPerEra>, ValueQuery>;
 
     // Set up initial storage values when chain starts up the first time
     #[pallet::genesis_config]
@@ -348,6 +348,7 @@ pub mod pallet {
             if n != Zero::zero() && (n % blocks_per_era).is_zero() {
                 // Get previous era
                 let prev_era = Self::increment_era();
+                let curr_era = prev_era + 1;
                 let total_system_stake = Self::total_staked();
 
                 let (ips_era_inflation, staker_era_inflation) = Self::mint_inflation(prev_era, total_system_stake.0);
@@ -355,6 +356,7 @@ pub mod pallet {
                 Self::calculate_ips_rewards(ips_era_inflation, total_system_stake.0);
                 Self::calculate_staker_rewards(staker_era_inflation, total_system_stake.0);
                 Self::update_total_system_stake(total_system_stake);
+                Self::process_staker_unstakes(curr_era);
             }
 
             // Calculate the inflation per era for the new year (block based, not calendar based)
@@ -474,19 +476,6 @@ pub mod pallet {
                 Error::<T>::MaxStakesAlreadyReached
             );
 
-            // Update storage
-            // IpsStakers::<T>::try_mutate(ips_id, |set| {
-            // 	set.try_insert(staker.clone())
-            // }).map_err(|_| Error::<T>::FailedAddingStaker)?;
-
-            // 1. If account has no stake record on IPS
-            // 		- push on tuple (current era + 1, stake)
-            // 2. Else If account already has stake record (even 0 stake) on IPS
-            //  	- pop off tuple from StakeByEra and update staking value (+ for stake, - for unstake)
-            //		- Push on tuple (current era + 1, updated stake)
-
-            let current_era = Self::current_era();
-
             // Update staking info
             StakeByEra::<T>::try_mutate(staker.clone(), ips_id, |era_stake| -> DispatchResult {
                 match era_stake.take() {
@@ -550,14 +539,23 @@ pub mod pallet {
                 .ok_or(Error::<T>::Overflow)?;
             TotalStaked::<T>::put(new_total_system_stake);
 
-            // TODO: Change to lock instead of reserve
-            // Reserve accounts tokens they are staking
-            <T as Config>::Currency::reserve(&staker, stake_amount)?;
+            // Lock accounts tokens when they are staking
+            // let existing_lock_amount = Self::ips_stakers(staker.clone()).unwrap_or((zero, zero, zero)).0;
+            // let existing_lock: u32 = <<T as pallet::Config>::Currency as Currency<T::AccountId>>::locks(staker.clone());
+            
+            // Check if account has existing lock
+            let mut active_and_new_stake: BalanceOf<T> = Zero::zero();
+            if let Some(stake) = Self::ips_stakers(staker.clone()) {
+                active_and_new_stake = stake.0 + stake.1;
+            }
+
+            <T as Config>::Currency::set_lock(STAKER_LOCK_ID, &staker.clone(), active_and_new_stake, WithdrawReasons::all());
+           
 
             Self::deposit_event(Event::<T>::NewStake {
-                staker: staker,
-                ips_id: ips_id,
-                stake_amount: stake_amount,
+                staker,
+                ips_id,
+                stake_amount,
             });
 
             Ok(().into())
@@ -630,10 +628,8 @@ pub mod pallet {
     }
 
     impl<T: Config> Pallet<T> {
+        /// Unstake tokens from an IP set
         pub fn unstake(staker: AccountIdOf<T>, ips_id: T::IpId, unstake_amount: BalanceOf<T>) -> DispatchResultWithPostInfo {
-        	// Ensure IPS is registered for staking
-        	ensure!(Self::registered_ips(ips_id).is_some(), Error::<T>::IpsNotRegistered);
-
         	// Ensure `unstake_amount` is at least `MinStakingAmount`
         	ensure!(unstake_amount >= <T as Config>::MinStakingAmount::get(), Error::<T>::BelowMinUnstakingAmount);
 
@@ -660,11 +656,6 @@ pub mod pallet {
 
         	// Ensure staking amount stays in valid range. Must either be above MinStakingAmount or be 0
         	ensure!(staked_amount - unstake_amount >= <T as Config>::MinStakingAmount::get() || staked_amount - unstake_amount == Zero::zero(), Error::<T>::StakingAmountTooLow);
-
-
-
-
-            let current_era = Self::current_era();
 
             // Update staking info
             StakeByEra::<T>::try_mutate(staker.clone(), ips_id, |era_stake| -> DispatchResult {
@@ -724,8 +715,17 @@ pub mod pallet {
             TotalStaked::<T>::put(new_total_system_stake);
 
             // TODO: Change to lock instead of reserve
-            // Reserve accounts tokens they are staking
-            // <T as Config>::Currency::reserve(&staker, stake_amount)?;
+            let curr_era = Self::current_era();
+
+            // Unlock tokens at beginning of `unlock_era`
+            // +1 is because the unbonding period only starts at the beginning of a new era
+            let unlock_era = curr_era + T::UnbondingPeriod::get() + 1;
+
+            // Queue tokens for unlock after UnbondingPeriod
+            UnstakeQueue::<T>::try_mutate(unlock_era, |b_vec| -> DispatchResult {
+                b_vec.try_push(staker.clone()).map_err(|_| Error::<T>::Overflow)?;
+                Ok(())
+            })?;
 
             Self::deposit_event(Event::<T>::Unstake {
                 staker: staker,
@@ -802,8 +802,8 @@ pub mod pallet {
                 let ips_total_stake = ips_stake_info.total_stake;
                 let account = ips_stake_info.address;
 
-                // Only earn rewards if a non-zero amount of tokens have been staked to this IP Set
-                if ips_total_stake > Zero::zero() {
+                // Only earn rewards if stake on the IP set is at least ActiveSetMinStake
+                if ips_total_stake >= T::ActiveSetMinStake::get() {
                     // IPS percentage of total system stake (TotalStaked)
                     let ips_percentage = Perbill::from_rational(ips_total_stake, total_system_stake);
                     
@@ -863,7 +863,13 @@ pub mod pallet {
                 // Set updated total stake for account
                 let updated_total_stake = account_total_stake + new_stake - new_unstake;
                 let zero: BalanceOf<T> = Zero::zero();
-                IpsStakers::<T>::set(account, Some((updated_total_stake, zero, zero)));
+
+                if updated_total_stake > zero {
+                    IpsStakers::<T>::set(account, Some((updated_total_stake, zero, zero)));
+                }
+                else {
+                    IpsStakers::<T>::set(account, None);
+                }
             }
 
             // Update StakeByEra records for IP Stakers
@@ -894,7 +900,14 @@ pub mod pallet {
                             let new_stake_amount = old_active_stake + new_stake - new_unstake;
                             let new_active_stake = Some((era, new_stake_amount));
                             let new_era_stake: EraStake<T> = (new_active_stake, None, None);
-                            *era_stake = Some(new_era_stake);
+
+                            if new_stake_amount.is_zero() {
+                                *era_stake = None;
+                            }
+                            else {
+                                *era_stake = Some(new_era_stake);
+                            }
+                            
                         }
                         else {
                             *era_stake = Some(old_era_stake);
@@ -914,6 +927,28 @@ pub mod pallet {
             let new_total_stake = old_total_stake + new_stake - new_unstake;
             let zero: BalanceOf<T> = Zero::zero();
             TotalStaked::<T>::put((new_total_stake, zero, zero));
+        }
+
+        fn process_staker_unstakes(new_era: Era) {
+            let unstakes_vec = Self::unstake_queue(new_era);
+            for account in unstakes_vec {
+                let mut active_stake: BalanceOf<T> = Zero::zero();
+                if let Some(stake) = Self::ips_stakers(account.clone()) {
+                    active_stake = stake.0;
+                }
+
+                if active_stake.is_zero()  {
+                    // Remove lock
+                    <T as Config>::Currency::remove_lock(STAKER_LOCK_ID, &account.clone());
+                }
+                else {
+                    // Update lock with lower amount
+                    <T as Config>::Currency::set_lock(STAKER_LOCK_ID, &account.clone(), active_stake, WithdrawReasons::all());
+                }
+            }
+
+            // Now delete data under key `new_era`
+            UnstakeQueue::<T>::remove(new_era);
         }
     }
 }

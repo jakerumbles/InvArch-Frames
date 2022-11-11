@@ -96,6 +96,7 @@ pub const EXISTENTIAL_DEPOSIT: Balance = MILLIUNIT;
 
 pub const ALICE: u128 = 1;
 pub const BOB: u128 = 2;
+pub const CHARLIE: u128 = 3;
 
 pub struct WeightToFee;
 impl WeightToFeePolynomial for WeightToFee {
@@ -157,15 +158,17 @@ impl frame_system::Config for Test {
 // }
 
 parameter_types! {
-    pub const IpsRegisterDeposit: Balance = UNIT;
+    pub const IpsRegisterDeposit: Balance = UNIT * 10;
     pub const OcifIpStakingPalletId: PalletId = PalletId(*b"ia/ipstk");
     pub const MinStakingAmount: Balance = UNIT;
     // pub const RewardCurve: &'static PiecewiseLinear<'static> = &REWARD_CURVE;
-    pub const MillisecondsPerEra: u64 = (DAYS as u64) * MILLISECS_PER_BLOCK;
+    // pub const MillisecondsPerEra: u64 = (DAYS as u64) * MILLISECS_PER_BLOCK;
     pub const BlocksPerEra: u32 = 1;
     pub const BlocksPerYear: u32 = 1 * 365; // BlocksPerEra * 365
     pub const UnbondingPeriod: u32 = 1;
+    pub const ActiveSetMinStake: Balance = UNIT * 15_000;
     pub const MaxUniqueStakes: u8 = 10;
+    pub const MaxUnstakesPerEra: u32 = 1_000_000;
     pub const IpStakingInflationRate: Perbill = Perbill::from_percent(10);
     pub const IpsInflationPercentage: Perbill = Perbill::from_percent(60);
     pub const StakerInflationPercentage: Perbill = Perbill::from_percent(40);
@@ -175,7 +178,6 @@ impl ip_staking::Config for Test {
     type Event = Event;
     type IpsId = CommonId;
     type Currency = Balances;
-    type Balance = Balance;
     // type EraPayout = ConvertCurve<RewardCurve>;
     type PalletId = OcifIpStakingPalletId;
     type IpsRegisterDeposit = IpsRegisterDeposit;
@@ -184,7 +186,9 @@ impl ip_staking::Config for Test {
     type BlocksPerEra = BlocksPerEra;
     type BlocksPerYear = BlocksPerYear;
     type UnbondingPeriod = UnbondingPeriod;
+    type ActiveSetMinStake = ActiveSetMinStake;
     type MaxUniqueStakes = MaxUniqueStakes;
+    type MaxUnstakesPerEra = MaxUnstakesPerEra;
     type IpStakingInflationRate = IpStakingInflationRate;
     type IpsInflationPercentage = IpsInflationPercentage;
     type StakerInflationPercentage = StakerInflationPercentage;
@@ -677,13 +681,21 @@ impl ExtBuilder {
         // Give accounts 10 tokens each
         pallet_balances::GenesisConfig::<Test> {
             balances: vec![
-                (1, 3_000_000_000_000),
-                (2, 11_699_993_000_000_000_000),
-                (3, 1_000_000_000_000),
-                (4, 1_000_000_000_000),
-                (5, 1_000_000_000_000),
-                (6, 1_000_000_000_000),
+                (1, 1_950_000_000_000_000_000),
+                (2, 1_950_000_000_000_000_000),
+                (3, 1_950_000_000_000_000_000),
+                (4, 1_950_000_000_000_000_000),
+                (5, 1_950_000_000_000_000_000),
+                (6, 1_950_000_000_000_000_000),
             ],
+            // balances: vec![
+            //     (1, 3_000_000_000_000),
+            //     (2, 11_699_993_000_000_000_000),
+            //     (3, 1_000_000_000_000),
+            //     (4, 1_000_000_000_000),
+            //     (5, 1_000_000_000_000),
+            //     (6, 1_000_000_000_000),
+            // ],
             // balances: vec![
             //     (1, 100_000_000_000_000),
             //     (2, 500_000_000_000_001),

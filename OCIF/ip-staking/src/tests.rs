@@ -1,7 +1,8 @@
 use crate::{mock::*, Error};
 // use alloc::vec;
 use crate::pallet::Call as IpStakingCall;
-use frame_support::{assert_noop, assert_ok, PalletId};
+use frame_support::BoundedVec;
+use frame_support::{assert_noop, assert_ok, PalletId, traits::{LockIdentifier}};
 use sp_runtime::traits::AccountIdConversion;
 use inv4::AnyIdOf;
 // use frame_system::Origin;
@@ -226,6 +227,382 @@ fn staking_to_non_registered_ips_should_fail() {
 }
 
 #[test]
+fn staking_lock_correct() {
+    ExtBuilder::default().build().execute_with(|| {
+        let ips_id = create_ips();
+        assert_ok!(register_ips(ips_id));
+
+        // Stake 10 tokens to IP set
+        assert_ok!(IpStaking::stake(
+            Origin::signed(BOB),
+            ips_id,
+            10_000_000_000_000
+        ));
+
+        const STAKER_LOCK_ID: LockIdentifier = *b"stakelok";
+
+        let mut lock_amount = pallet_balances::Locks::<Test>::get(BOB).into_iter().find(|lock| lock.id == STAKER_LOCK_ID).unwrap().amount;
+        assert_eq!(lock_amount, 10_000_000_000_000);
+
+        assert_ok!(IpStaking::stake(
+            Origin::signed(BOB),
+            ips_id,
+            15_000_000_000_000
+        ));
+
+        lock_amount = pallet_balances::Locks::<Test>::get(BOB).into_iter().find(|lock| lock.id == STAKER_LOCK_ID).unwrap().amount;
+        assert_eq!(lock_amount, 25_000_000_000_000);
+
+        run_to_block(2);
+
+        lock_amount = pallet_balances::Locks::<Test>::get(BOB).into_iter().find(|lock| lock.id == STAKER_LOCK_ID).unwrap().amount;
+        assert_eq!(lock_amount, 25_000_000_000_000);
+
+        assert_ok!(IpStaking::unstake_amount(
+            Origin::signed(BOB),
+            ips_id,
+            5_000_000_000_000
+        ));
+
+        let mut unlock_era = IpStaking::current_era() + <Test as crate::Config>::UnbondingPeriod::get() + 1;
+        assert!(IpStaking::unstake_queue(unlock_era).contains(&BOB));
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (25_000_000_000_000, 0, 5_000_000_000_000));
+
+        run_to_block(3);
+
+        // Lock amount should still be the same. UnbondingPeriod is not over yet.
+        lock_amount = pallet_balances::Locks::<Test>::get(BOB).into_iter().find(|lock| lock.id == STAKER_LOCK_ID).unwrap().amount;
+        assert_eq!(lock_amount, 25_000_000_000_000);
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (20_000_000_000_000, 0, 0));
+
+        run_to_block(4);
+
+        assert!(!IpStaking::unstake_queue(unlock_era).contains(&BOB));
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (20_000_000_000_000, 0, 0));
+
+        lock_amount = pallet_balances::Locks::<Test>::get(BOB).into_iter().find(|lock| lock.id == STAKER_LOCK_ID).unwrap().amount;
+        assert_eq!(lock_amount, 20_000_000_000_000);
+
+        assert_ok!(IpStaking::stake(
+            Origin::signed(BOB),
+            ips_id,
+            80_000_000_000_000
+        ));
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (20_000_000_000_000, 80_000_000_000_000, 0));
+
+        lock_amount = pallet_balances::Locks::<Test>::get(BOB).into_iter().find(|lock| lock.id == STAKER_LOCK_ID).unwrap().amount;
+        assert_eq!(lock_amount, 100_000_000_000_000);
+
+        run_to_block(5);
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (100_000_000_000_000, 0, 0));
+
+        lock_amount = pallet_balances::Locks::<Test>::get(BOB).into_iter().find(|lock| lock.id == STAKER_LOCK_ID).unwrap().amount;
+        assert_eq!(lock_amount, 100_000_000_000_000);
+
+        assert_ok!(IpStaking::unstake_all(
+            Origin::signed(BOB),
+            ips_id
+        ));
+
+        unlock_era = IpStaking::current_era() + <Test as crate::Config>::UnbondingPeriod::get() + 1;
+        assert!(IpStaking::unstake_queue(unlock_era).contains(&BOB));
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (100_000_000_000_000, 0, 100_000_000_000_000));
+
+        lock_amount = pallet_balances::Locks::<Test>::get(BOB).into_iter().find(|lock| lock.id == STAKER_LOCK_ID).unwrap().amount;
+        assert_eq!(lock_amount, 100_000_000_000_000);
+
+        run_to_block(6);
+
+        assert_eq!(IpStaking::ips_stakers(BOB), None);
+
+        lock_amount = pallet_balances::Locks::<Test>::get(BOB).into_iter().find(|lock| lock.id == STAKER_LOCK_ID).unwrap().amount;
+        assert_eq!(lock_amount, 100_000_000_000_000);
+
+        run_to_block(7);
+        
+        assert!(!IpStaking::unstake_queue(unlock_era).contains(&BOB));
+
+        let final_lock_amount = pallet_balances::Locks::<Test>::get(BOB).into_iter().find(|lock| lock.id == STAKER_LOCK_ID);
+        assert_eq!(final_lock_amount, None);
+
+
+    });
+}
+
+#[test]
+fn unstaking_from_ips() {
+    ExtBuilder::default().build().execute_with(|| {
+        let ips_id = create_ips();
+        assert_ok!(register_ips(ips_id));
+
+        // Stake 10 tokens to IP set
+        assert_ok!(IpStaking::stake(
+            Origin::signed(BOB),
+            ips_id,
+            10_000_000_000_000
+        ));
+
+        let mut stake_by_era = IpStaking::stake_by_era(BOB, ips_id);
+        let mut expected_tuple = Some((None, Some(10_000_000_000_000), None));
+        assert_eq!(stake_by_era, expected_tuple);
+
+        assert_eq!(IpStaking::total_staked(), (0, 10_000_000_000_000, 0));
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (0, 10_000_000_000_000, 0));
+
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 0);
+        assert_eq!(new_stake, 10_000_000_000_000);
+        assert_eq!(new_unstake, 0);
+
+        run_to_block(2);
+
+        stake_by_era = IpStaking::stake_by_era(BOB, ips_id);
+        expected_tuple = Some((Some((1, 10_000_000_000_000)), None, None));
+        assert_eq!(stake_by_era, expected_tuple);
+
+        assert_eq!(IpStaking::total_staked(), (10_000_000_000_000, 0, 0));
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (10_000_000_000_000, 0, 0));
+
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 10_000_000_000_000);
+        assert_eq!(new_stake, 0);
+        assert_eq!(new_unstake, 0);
+
+        // Unstake 5 tokens from IP set
+        assert_ok!(IpStaking::unstake_amount(
+            Origin::signed(BOB),
+            ips_id,
+            5_000_000_000_000
+        ));
+
+        stake_by_era = IpStaking::stake_by_era(BOB, ips_id);
+        expected_tuple = Some((Some((1, 10_000_000_000_000)), None, Some(5_000_000_000_000)));
+        assert_eq!(stake_by_era, expected_tuple);
+
+        assert_eq!(IpStaking::total_staked(), (10_000_000_000_000, 0, 5_000_000_000_000));
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (10_000_000_000_000, 0, 5_000_000_000_000));
+
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 10_000_000_000_000);
+        assert_eq!(new_stake, 0);
+        assert_eq!(new_unstake, 5_000_000_000_000);
+
+        run_to_block(3);
+
+        stake_by_era = IpStaking::stake_by_era(BOB, ips_id);
+        expected_tuple = Some((Some((2, 5_000_000_000_000)), None, None));
+        assert_eq!(stake_by_era, expected_tuple);
+
+        assert_eq!(IpStaking::total_staked(), (5_000_000_000_000, 0, 0));
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (5_000_000_000_000, 0, 0));
+
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 5_000_000_000_000);
+        assert_eq!(new_stake, 0);
+        assert_eq!(new_unstake, 0);
+
+        assert_ok!(IpStaking::stake(
+            Origin::signed(BOB),
+            ips_id,
+            1_000_000_000_000
+        ));
+
+        assert_ok!(IpStaking::unstake_amount(
+            Origin::signed(BOB),
+            ips_id,
+            1_000_000_000_000
+        ));
+
+        stake_by_era = IpStaking::stake_by_era(BOB, ips_id);
+        expected_tuple = Some((Some((2, 5_000_000_000_000)), Some(1_000_000_000_000), Some(1_000_000_000_000)));
+        assert_eq!(stake_by_era, expected_tuple);
+
+        assert_eq!(IpStaking::total_staked(), (5_000_000_000_000, 1_000_000_000_000, 1_000_000_000_000));
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (5_000_000_000_000, 1_000_000_000_000, 1_000_000_000_000));
+
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 5_000_000_000_000);
+        assert_eq!(new_stake, 1_000_000_000_000);
+        assert_eq!(new_unstake, 1_000_000_000_000);
+
+        run_to_block(4);
+
+        stake_by_era = IpStaking::stake_by_era(BOB, ips_id);
+        expected_tuple = Some((Some((3, 5_000_000_000_000)), None, None));
+        assert_eq!(stake_by_era, expected_tuple);
+
+        assert_eq!(IpStaking::total_staked(), (5_000_000_000_000, 0, 0));
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (5_000_000_000_000, 0, 0));
+
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 5_000_000_000_000);
+        assert_eq!(new_stake, 0);
+        assert_eq!(new_unstake, 0);
+
+        assert_ok!(IpStaking::unstake_all(
+            Origin::signed(BOB),
+            ips_id
+        ));
+
+        stake_by_era = IpStaking::stake_by_era(BOB, ips_id);
+        expected_tuple = Some((Some((3, 5_000_000_000_000)), None, Some(5_000_000_000_000)));
+        assert_eq!(stake_by_era, expected_tuple);
+
+        assert_eq!(IpStaking::total_staked(), (5_000_000_000_000, 0, 5_000_000_000_000));
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (5_000_000_000_000, 0, 5_000_000_000_000));
+
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 5_000_000_000_000);
+        assert_eq!(new_stake, 0);
+        assert_eq!(new_unstake, 5_000_000_000_000);
+
+        run_to_block(5);
+
+        stake_by_era = IpStaking::stake_by_era(BOB, ips_id);
+        expected_tuple = None;
+        assert_eq!(stake_by_era, expected_tuple);
+
+        assert_eq!(IpStaking::total_staked(), (0, 0, 0));
+
+        assert_eq!(IpStaking::ips_stakers(BOB), None);
+
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 0);
+        assert_eq!(new_stake, 0);
+        assert_eq!(new_unstake, 0);
+
+        let ips_id_2 = create_ips();
+        assert_ok!(register_ips(ips_id_2));
+
+        assert_ok!(IpStaking::stake(
+            Origin::signed(BOB),
+            ips_id,
+            6_000_000_000_000
+        ));
+
+        assert_ok!(IpStaking::stake(
+            Origin::signed(ALICE),
+            ips_id_2,
+            10_000_000_000_000
+        ));
+
+        assert_ok!(IpStaking::stake(
+            Origin::signed(CHARLIE),
+            ips_id_2,
+            3_000_000_000_000
+        ));
+        
+
+        stake_by_era = IpStaking::stake_by_era(BOB, ips_id);
+        expected_tuple = Some((None, Some(6_000_000_000_000), None));
+        assert_eq!(stake_by_era, expected_tuple);
+
+        stake_by_era = IpStaking::stake_by_era(ALICE, ips_id_2);
+        expected_tuple = Some((None, Some(10_000_000_000_000), None));
+        assert_eq!(stake_by_era, expected_tuple);
+
+        stake_by_era = IpStaking::stake_by_era(CHARLIE, ips_id_2);
+        expected_tuple = Some((None, Some(3_000_000_000_000), None));
+        assert_eq!(stake_by_era, expected_tuple);
+
+        assert_eq!(IpStaking::total_staked(), (0, 19_000_000_000_000, 0));
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (0, 6_000_000_000_000, 0));
+        assert_eq!(IpStaking::ips_stakers(ALICE).unwrap(), (0, 10_000_000_000_000, 0));
+        assert_eq!(IpStaking::ips_stakers(CHARLIE).unwrap(), (0, 3_000_000_000_000, 0));
+
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 0);
+        assert_eq!(new_stake, 6_000_000_000_000);
+        assert_eq!(new_unstake, 0);
+
+        let registerd_ips_obj_2 = IpStaking::registered_ips(ips_id_2).unwrap();
+        let total_stake = registerd_ips_obj_2.total_stake;
+        let new_stake = registerd_ips_obj_2.next_era_new_stake;
+        let new_unstake = registerd_ips_obj_2.next_era_new_unstake;
+        assert_eq!(total_stake, 0);
+        assert_eq!(new_stake, 13_000_000_000_000);
+        assert_eq!(new_unstake, 0);
+
+        run_to_block(6);
+
+        stake_by_era = IpStaking::stake_by_era(BOB, ips_id);
+        expected_tuple = Some((Some((5, 6_000_000_000_000)), None, None));
+        assert_eq!(stake_by_era, expected_tuple);
+
+        stake_by_era = IpStaking::stake_by_era(ALICE, ips_id_2);
+        expected_tuple = Some((Some((5, 10_000_000_000_000)), None, None));
+        assert_eq!(stake_by_era, expected_tuple);
+
+        stake_by_era = IpStaking::stake_by_era(CHARLIE, ips_id_2);
+        expected_tuple = Some((Some((5, 3_000_000_000_000)), None, None));
+        assert_eq!(stake_by_era, expected_tuple);
+
+        assert_eq!(IpStaking::total_staked(), (19_000_000_000_000, 0, 0));
+
+        assert_eq!(IpStaking::ips_stakers(BOB).unwrap(), (6_000_000_000_000, 0, 0));
+        assert_eq!(IpStaking::ips_stakers(ALICE).unwrap(), (10_000_000_000_000, 0, 0));
+        assert_eq!(IpStaking::ips_stakers(CHARLIE).unwrap(), (3_000_000_000_000, 0, 0));
+
+        let registerd_ips_obj = IpStaking::registered_ips(ips_id).unwrap();
+        let total_stake = registerd_ips_obj.total_stake;
+        let new_stake = registerd_ips_obj.next_era_new_stake;
+        let new_unstake = registerd_ips_obj.next_era_new_unstake;
+        assert_eq!(total_stake, 6_000_000_000_000);
+        assert_eq!(new_stake, 0);
+        assert_eq!(new_unstake, 0);
+
+        let registerd_ips_obj_2 = IpStaking::registered_ips(ips_id_2).unwrap();
+        let total_stake = registerd_ips_obj_2.total_stake;
+        let new_stake = registerd_ips_obj_2.next_era_new_stake;
+        let new_unstake = registerd_ips_obj_2.next_era_new_unstake;
+        assert_eq!(total_stake, 13_000_000_000_000);
+        assert_eq!(new_stake, 0);
+        assert_eq!(new_unstake, 0);
+    });
+}
+
+#[test]
 fn unstaking_below_min_amount_should_fail() {
     ExtBuilder::default().build().execute_with(|| {
         let ips_id = create_ips();
@@ -239,7 +616,41 @@ fn unstaking_below_min_amount_should_fail() {
         ));
 
         // Unstaking less than the MinStakingAmount should fail
-        // assert_noop!(IpStaking::unstake_amount(Origin::signed(BOB), ips_id, 999_999_999_999), Error::<Test>::BelowMinUnstakingAmount);
+        assert_noop!(IpStaking::unstake_amount(Origin::signed(BOB), ips_id, 999_999_999_999), Error::<Test>::BelowMinUnstakingAmount);
+    });
+}
+
+#[test]
+fn unstake_unregistered_ips() {
+    ExtBuilder::default().build().execute_with(|| {
+        let ips_id = create_ips();
+        assert_ok!(register_ips(ips_id));
+
+        // Stake 10 tokens to IP set
+        assert_ok!(IpStaking::stake(
+            Origin::signed(BOB),
+            ips_id,
+            10_000_000_000_000
+        ));
+
+        run_to_block(10);
+
+        
+
+        // TODO: finish!
+
+        // Unstaking less than the MinStakingAmount should fail
+        assert_noop!(IpStaking::unstake_amount(Origin::signed(BOB), ips_id, 999_999_999_999), Error::<Test>::BelowMinUnstakingAmount);
+    });
+}
+
+#[test]
+fn unstaking_with_no_stake_should_fail() {
+    ExtBuilder::default().build().execute_with(|| {
+        let ips_id = create_ips();
+        assert_ok!(register_ips(ips_id));
+        assert_noop!(IpStaking::unstake_amount(Origin::signed(BOB), ips_id, 1_000_000_000_000), Error::<Test>::AccountHasNoStake);
+        assert_noop!(IpStaking::unstake_all(Origin::signed(BOB), ips_id), Error::<Test>::AccountHasNoStake);
     });
 }
 
@@ -359,7 +770,7 @@ fn inflation_minting_correctly() {
 
 fn create_ips() -> u32 {
     let ips_id = INV4::next_ips_id();
-    assert_eq!(ips_id, 0);
+    // assert_eq!(ips_id, 0);
 
     // Create an IP set
     let metadata: Vec<u8> = vec![1u8, 2u8, 3u8];
@@ -394,6 +805,23 @@ fn register_ips(ips_id: u32) -> Result<(), ()> {
     ));
 
     assert_ne!(IpStaking::registered_ips(ips_id), None);
+
+    Ok(())
+}
+
+fn unregister_ips(ips_id: u32) -> Result<(), ()> {
+    assert_ne!(INV4::ips_storage(ips_id), None);
+
+    // Register IP set for IP staking
+    let call = Call::IpStaking(IpStakingCall::unregister { ips_id });
+    assert_ok!(INV4::operate_multisig(
+        Origin::signed(ALICE),
+        false,
+        (ips_id, None),
+        Box::new(call)
+    ));
+
+    assert_eq!(IpStaking::registered_ips(ips_id), None);
 
     Ok(())
 }
