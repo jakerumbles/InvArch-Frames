@@ -4,3 +4,6 @@
 
 #local dependencies
 **/Cargo.lock
+
+# Intellij
+.idea

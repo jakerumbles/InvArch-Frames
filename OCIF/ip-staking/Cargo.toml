@@ -2,7 +2,7 @@
 name = 'pallet-ip-staking'
 authors = ['InvArchitects <https://github.com/InvArch>']
 description = 'FRAME pallet to IP staking'
-edition = '2018'
+edition = '2021'
 homepage = 'https://invarch.network'
 license = 'GPLv3'
 repository = 'https://github.com/InvArch/InvArch-Pallet-Library/'
@@ -12,36 +12,61 @@ version = '0.1.0-dev'
 targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
-codec = { package = "parity-scale-codec", version = "2.0", features = ["derive"], default-features = false }
-serde = { version = "1.0.106", features = ["derive"], optional = true }
-num-traits = { version = "0.2", default-features = false }
-sp-core = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.18",  default-features = false }
-sp-runtime = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.18",  default-features = false }
-sp-arithmetic = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.18",  default-features = false }
-sp-io = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.18",  default-features = false }
-sp-std = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.18",  default-features = false }
-pallet-balances = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.18",  default-features = false }
-frame-support = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.18",  default-features = false }
-pallet-session = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.18",  default-features = false }
-pallet-timestamp = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.18",  default-features = false }
-frame-system = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.18",  default-features = false }
-sp-staking = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.18",  default-features = false }
+codec = { package = "parity-scale-codec", version = "3.0.0", features = ["derive"], default-features = false }
+scale-info = { version = "2.0.0", default-features = false, features = ["derive"] }
+smallvec = "1.6.1"
+
+# Substrate
+frame-benchmarking = { git = "https://github.com/paritytech/substrate", default-features = false, optional = true, branch = "polkadot-v0.9.26" }
+frame-support = { git = "https://github.com/paritytech/substrate", default-features = false, branch = "polkadot-v0.9.26" }
+frame-system = { git = "https://github.com/paritytech/substrate", default-features = false, branch = "polkadot-v0.9.26" }
+sp-runtime = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.26", default-features = false }
+sp-io = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.26", default-features = false }
+sp-core = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.26", default-features = false }
+sp-std = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.26", default-features = false }
+
+
+# InvArch dependencies
+primitives = { package = "invarch-primitives", path = "../../primitives", default-features = false }
+# pallet-inv4 = { git = "https://github.com/InvArch/InvArch-Frames", branch = "main",  default-features = false }
+pallet-inv4 = { package = "pallet-inv4", path = "../../INV4/pallet-inv4", default-features = false }
+
+# Frame dependencies
+pallet-balances = { git = 'https://github.com/paritytech/substrate.git', branch = "polkadot-v0.9.26", default-features = false }
+pallet-staking = { git = 'https://github.com/paritytech/substrate.git', branch = "polkadot-v0.9.26", default-features = false }
+
+
+[dev-dependencies]
+# serde = { version = "1.0.132" }
+
+# Substrate
+# sp-core = { git = "https://github.com/paritytech/substrate", default-features = false, branch = "polkadot-v0.9.26" }
+# sp-io = { git = "https://github.com/paritytech/substrate", default-features = false, branch = "polkadot-v0.9.26" }
+# sp-runtime = { git = "https://github.com/paritytech/substrate", default-features = false, branch = "polkadot-v0.9.26" }
+pallet-timestamp = { git = "https://github.com/paritytech/substrate.git", default-features = false, branch = "polkadot-v0.9.26" }
+pallet-rmrk-core = { git = "https://github.com/Phala-Network/rmrk-substrate", default-features = false, branch = "polkadot-v0.9.26" }
+pallet-rmrk-equip = { git = "https://github.com/Phala-Network/rmrk-substrate", default-features = false, branch = "polkadot-v0.9.26" }
+pallet-uniques = { git = "https://github.com/paritytech/substrate", default-features = false, branch = "polkadot-v0.9.26" }
+pallet-staking-reward-curve = { git = 'https://github.com/paritytech/substrate.git', default-features = false, branch = "polkadot-v0.9.26"}
+pallet-ipf = { path = "../../../InvArch-Frames/INV4/pallet-ipf", default-features = false }
+
 
 [features]
 default = ["std"]
+runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
 std = [
-    "serde",
-    "codec/std",
-    "num-traits/std",
-    "sp-core/std",
-    "sp-runtime/std",
-    "sp-arithmetic/std",
-    "sp-io/std",
-    "sp-std/std",
-    "frame-support/std",
-    "frame-system/std",
-    "pallet-balances/std",
-    "pallet-session/std",
-    "pallet-timestamp/std",
-    "sp-staking/std",
+	"codec/std",
+	"scale-info/std",
+	"frame-benchmarking/std",
+	"frame-support/std",
+	"frame-system/std",
+	"pallet-timestamp/std",
+	"pallet-balances/std",
+	"pallet-staking/std",
+    "primitives/std",
+	"sp-runtime/std",
+	"sp-io/std",
+	"sp-core/std",
+	"pallet-inv4/std"
 ]
+try-runtime = [ "frame-support/try-runtime" ]
